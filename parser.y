@@ -31,32 +31,41 @@ print_align align;
 
 %token<id_name> T_id
 %token<num> T_uint_const "int_const"
-%token T_char_const "char_const"
-%token T_str_const  "string_literal"
+%token<chr> T_char_const "char_const"
+%token<str> T_str_const  "string_literal"
 
-%left "or"
-%left "and"
-%left "not"
-%nonassoc '=' '#' '>' '<' "<=" ">="
-%left '+' '-'
-%left '*' "div" "mod"
+%left<op> "or"
+%left<op> "and"
+%left<op> "not"
+%nonassoc<op> '=' '#' '>' '<' "<=" ">="
+%left<op> '+' '-'
+%left<op> '*' "div" "mod"
 %left UPLUS UMINUS
 
 %union {
-	const char      *id_name;
-	int             num;
-	Local_def       *ldef;
-	Header          *hdr;
-	Local_def_list  *ldlist;
-	Block           *blk;
-	Id_list         *idlist;
-	Data_type       *dtype;
-	Type            *type;
-	Array_tail_decl *tail;
-	Fpar_type       *fpt;
-	Ret_type        *rt;
-	Fpar_def_list   *fpdl;
-	Fpar_def        *fpd;
+	const char         *id_name;
+	unsigned long long num;
+	const char         *str;
+	const char         *chr;
+	Local_def          *ldef;
+	Header             *hdr;
+	Local_def_list     *ldlist;
+	Block              *blk;
+	Id_list            *idlist;
+	Data_type          *dtype;
+	Type               *type;
+	Array_tail_decl    *tail;
+	Fpar_type          *fpt;
+	Ret_type           *rt;
+	Fpar_def_list      *fpdl;
+	Fpar_def           *fpd;
+	Stmt               *stm;
+	Func_call          *fc;
+	L_value            *lv;
+	Expr               *exp;
+	Expr_list          *elist;
+	Cond               *cnd;
+	char               op;
 }
 
 %type<ldef>   local_def
@@ -66,6 +75,7 @@ print_align align;
 %type<hdr>    header
 %type<ldlist> local_def_list
 %type<blk>    block
+%type<blk>    stmt_list
 %type<idlist> identifier_list
 %type<dtype>  data_type
 %type<type>   type
@@ -74,6 +84,12 @@ print_align align;
 %type<rt>     ret_type
 %type<fpdl>   fpar_def_list
 %type<fpd>    fpar_def
+%type<stm>    stmt
+%type<fc>     func_call
+%type<elist>  expr_list
+%type<lv>     l_value
+%type<exp>    expr
+%type<cnd>    cond
 
 
 %expect 1
@@ -136,9 +152,9 @@ ret_type:
 
 fpar_type:
   data_type                         { $$ = new Fpar_type($1, false, nullptr); }
-| data_type '[' ']'                 { $$ = new Fpar_type($1, true, nullptr); }
+| data_type '[' ']'                 { $$ = new Fpar_type($1, true,  nullptr); }
 | data_type array_tail_decl         { $$ = new Fpar_type($1, false, $2); }
-| data_type '[' ']' array_tail_decl { $$ = new Fpar_type($1, true, $4); }
+| data_type '[' ']' array_tail_decl { $$ = new Fpar_type($1, true,  $4); }
 ;
 
 local_def:
@@ -156,67 +172,67 @@ var_def:
 ;
 
 stmt:
-  ';'
-| l_value "<-" expr ';'
-| block
-| func_call ';'
-| "if" cond "then" stmt
-| "if" cond "then" stmt "else" stmt
-| "while" cond "do" stmt
-| "return" ';'
-| "return" expr ';'
+  ';'                               { $$ = new Empty_stmt(); }
+| l_value "<-" expr ';'             { $$ = new Assign($1, $3); }
+| block                             { $$ = $1; }
+| func_call ';'                     { $$ = $1; }
+| "if" cond "then" stmt             { $$ = new If($2, $4, nullptr); }
+| "if" cond "then" stmt "else" stmt { $$ = new If($2, $4, $6); }
+| "while" cond "do" stmt            { $$ = new While($2, $4); }
+| "return" ';'                      { $$ = new Return(nullptr); }
+| "return" expr ';'                 { $$ = new Return($2); }
 ;
 
 block:
-  '{' stmt_list '}' { $$ = new Block(); }
+  '{' stmt_list '}' { $$ = $2; }
 ;
 
-stmt_list: /* nothing */
-| stmt_list stmt
+stmt_list: /* nothing */ { $$ = new Stmt_list(); }
+| stmt_list stmt         { $1->append($2); $$ = $1; }
 ;
 
 func_call:
-  T_id '(' ')'
-| T_id '(' expr_list ')'
+  T_id '(' ')'           { $$ = new Func_call(new Id($1), nullptr); }
+| T_id '(' expr_list ')' { $$ = new Func_call(new Id($1), $3); }
 ;
 
 expr_list:
-  expr
-| expr_list ',' expr
+  expr               { $$ = new Expr_list($1); }
+| expr_list ',' expr { $1->append($3); $$ = $1; }
 ;
 
 l_value:
-  T_id
-| "string_literal"
-| l_value '[' expr ']'
+  T_id                 { $$ = new L_value(new Id($1), nullptr, nullptr, nullptr); }
+| "string_literal"     { $$ = new L_value(nullptr, $1, nullptr, nullptr); }
+| l_value '[' expr ']' { $$ = new L_value(nullptr, nullptr, $1, $3); }
 ;
 
 expr:
-  "int_const"
-| "char_const"
-| l_value
-| '(' expr ')'
-| func_call
-| '+' expr %prec UPLUS
-| '-' expr %prec UMINUS
-| expr '+' expr
-| expr '-' expr
-| expr '*' expr
-| expr "div" expr
-| expr "mod" expr
+  "int_const"           { $$ = new Int_const($1); }
+| "char_const"          { $$ = new Char_const($1); }
+| l_value               { $$ = $1; }
+| '(' expr ')'          { $$ = $2; }
+| func_call             { $$ = $1; }
+| '+' expr %prec UPLUS  { $$ = new UnOp($1, $2); }
+| '-' expr %prec UMINUS { $$ = new UnOp($1, $2); }
+| expr '+' expr         { $$ = new BinOp($1, $2, $3); }
+| expr '-' expr         { $$ = new BinOp($1, $2, $3); }
+| expr '*' expr         { $$ = new BinOp($1, $2, $3); }
+| expr "div" expr       { $$ = new BinOp($1, $2, $3); }
+| expr "mod" expr       { $$ = new BinOp($1, $2, $3); }
 ;
 
 cond:
-  '(' cond ')'
-| "not" cond
-| cond "and" cond
-| cond "or" cond
-| expr '=' expr
-| expr '#' expr
-| expr '<' expr
-| expr '>' expr
-| expr "<=" expr
-| expr ">=" expr
+  '(' cond ')'    { $$ = $2; }
+| "not" cond      { $$ = new NotCond($2); }
+| cond "and" cond { $$ = new BinCond($1, $2, $3); }
+| cond "or" cond  { $$ = new BinCond($1, $2, $3); }
+| expr '=' expr   { $$ = new BinOpCond($1, $2, $3); }
+| expr '#' expr   { $$ = new BinOpCond($1, $2, $3); }
+| expr '<' expr   { $$ = new BinOpCond($1, $2, $3); }
+| expr '>' expr   { $$ = new BinOpCond($1, $2, $3); }
+| expr "<=" expr  { $$ = new BinOpCond($1, $2, $3); }
+| expr ">=" expr  { $$ = new BinOpCond($1, $2, $3); }
 ;
 
 %%

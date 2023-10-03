@@ -69,6 +69,8 @@ inline std::ostream &operator<<(std::ostream &out, const AST &ast) {
 	return out;
 }
 
+/* Utils */
+
 class Listable : public AST {
 	public:
 };
@@ -95,6 +97,21 @@ class Item_list : public AST {
 		std::vector<Listable*> item_list;
 		const char* list_name;
 };
+
+class Under_construction : public Listable {
+	public:
+		Under_construction(const char* s) : name(s) {}
+		void print(std::ostream &out) const override {
+			align.begin(out, name);
+			out << align << "Under" << std::endl
+			    << align << "construction" << std::endl;
+			align.end(out);
+		}
+	private:
+		const char *name;
+};
+
+/* End of Utils, Actual Syntax Structures */
 
 class Id : public Listable {
 	public:
@@ -130,8 +147,8 @@ class Data_type : public AST {
 
 class Array_tail_decl : public AST {
 	public:
-		Array_tail_decl(int n) : sizes(1, n) {}
-		void append(int n) { sizes.push_back(n); } // possiblle semantic analysis point: n > 0
+		Array_tail_decl(unsigned long long n) : sizes(1, n) {}
+		void append(unsigned long long n) { sizes.push_back(n); } // possiblle semantic analysis point: n > 0
 		void print(std::ostream &out) const override {
 			align.begin(out, "Array of size", true);
 			for(const auto &n : sizes)
@@ -140,7 +157,7 @@ class Array_tail_decl : public AST {
 			align.end(out);
 		}
 	private:
-		std::vector<int> sizes;
+		std::vector<unsigned long long> sizes;
 };
 
 class Type : public AST {
@@ -161,7 +178,7 @@ class Type : public AST {
 		}
 	
 	private:
-		Data_type *dt;
+		Data_type       *dt;
 		Array_tail_decl *atd;
 };
 
@@ -175,7 +192,7 @@ class Var_def : public Local_def {
 		void print(std::ostream &out) const override {
 			align.begin(out, "Variable Definition");
 			out << *Identifier_list
-				<< align << " All above are of type:"<< std::endl;
+			    << align << " All above are of type:"<< std::endl;
 			align.no_line();
 			out << *of_type;
 			align.end(out);
@@ -201,7 +218,7 @@ class Ret_type : public AST {
 		}
 	private:
 		Data_type *dt;
-		bool       nothing;
+		bool      nothing;
 };
 
 class Fpar_type : public AST {
@@ -282,16 +299,23 @@ class Local_def_list : public Item_list {
 		Local_def_list() : Item_list("Local Definition List") {}
 };
 
-class Block : public AST {
+class Stmt : public Listable {
+	public: // maybe print we are inside a stmt
+};
+
+class Block : public Stmt {
 	public:
-		Block() {} // fill in later
-		void print(std::ostream &out) const override {
-			align.begin(out, "Block");
-			out << align << "fill" << std::endl
-				<< align << "in" << std::endl
-				<< align << "later" << std::endl;
-			align.end(out);
-		}
+		virtual void append(Stmt *s) = 0;
+		// maybe print we are inside a block
+};
+
+class Stmt_list : public Block {
+	public:
+		Stmt_list() : s_list("Statement List") {}
+		void append(Stmt *s) override {s_list.append(s); }
+		void print(std::ostream &out) const override { s_list.print(out); }
+	private:
+		Item_list s_list;
 };
 
 class Func_def : public Local_def {
@@ -305,9 +329,266 @@ class Func_def : public Local_def {
 			align.end(out);
 		}
 	private:
-		Header *h;
+		Header         *h;
 		Local_def_list *ldl;
-		Block *b;
+		Block          *b;
+};
+
+/* Expressions & Conditions */
+
+class Expr : public Listable {
+	public: // maybe print we are inside an expression
+};
+
+class Int_const : public Expr {
+	public:
+		Int_const(unsigned long long value) : val(value) {}
+		void print(std::ostream &out) const override {
+			align.begin(out, "Integer Constant", true);
+			out << ' ' << val << std::endl;
+			align.end(out);
+		}
+	private:
+		unsigned long long val;
+};
+
+class Char_const : public Expr { // char is treated as a string. maybe evaluate it?
+	public:
+		Char_const(const char* chr) : ch(chr) {}
+		void print(std::ostream &out) const override {
+			align.begin(out, "Character Constant", true);
+			out << ' ' << ch << std::endl;
+			align.end(out);
+		}
+	private:
+		const char *ch;
+};
+
+/* Func_call is also an expression but is a statement too so it's defined later */
+
+class UnOp : public Expr {
+	public:
+		UnOp(char Operator, Expr* exp) : op(Operator), e(exp) {}
+		void print(std::ostream &out) const override {
+			align.begin(out, "Unary Operation");
+			out << align << "Op(" << op << ')' << std::endl;
+			align.no_line();
+			out << *e;
+			align.end(out);
+		}
+	private:
+		char op;
+		Expr *e;
+};
+
+#define AND_OP 'a'
+#define DIV_OP 'd'
+#define MOD_OP 'm'
+#define OR_OP  'o'
+#define LEQ_OP 'l'
+#define GEQ_OP 'g'
+class BinOp : public Expr {
+	public:
+		BinOp(Expr* left, char Operator, Expr* right) : l(left), op(Operator), r(right) {}
+		void print(std::ostream &out) const override {
+			align.begin(out, "Binary Operation");
+			out << *l
+			    << align << "Op(" << op << ')' << std::endl
+			    << align << std::endl;
+			align.no_line();
+		    out << *r;
+			align.end(out);
+		}
+	private:
+		Expr *l;
+		char op;
+		Expr *r;
+};
+
+class Expr_list : public Item_list {
+	public:
+		Expr_list(Expr* expr) : Item_list("Expression List") {
+			this->append(expr);
+		}
+};
+
+class Cond : public AST {
+	public:
+};
+
+class NotCond : public Cond {
+	public:
+		NotCond(Cond* cond) : c(cond) {}
+		void print(std::ostream &out) const override {
+			align.begin(out, "Not Condtion");
+			out << align << "OP(not)" << std::endl;
+			align.no_line();
+			out << *c;
+			align.end(out);
+		}
+	private:
+		Cond *c;
+};
+
+class BinCond : public Cond {
+	public:
+		BinCond(Cond* left, char Operator, Cond* right) : l(left), op(Operator), r(right) {}
+		void print(std::ostream &out) const override {
+			align.begin(out, "Binary Condition");
+			out << *l
+			    << align << "Op(" << op << ')' << std::endl
+			    << align << std::endl;
+			align.no_line();
+			out << *r;
+			align.end(out);
+		}
+	private:
+		Cond *l;
+		char op;
+		Cond *r;
+};
+
+class BinOpCond : public Cond {
+	public:
+		BinOpCond(Expr* left, char Operator, Expr* right) : l(left), op(Operator), r(right) {}
+		void print(std::ostream &out) const override {
+			align.begin(out, "Binary Operational Condition");
+			out << *l
+			    << align << "Op(" << op << ')' << std::endl
+			    << align << std::endl;
+			align.no_line();
+		    out << *r;
+			align.end(out);
+		}
+	private:
+		Expr *l;
+		char op;
+		Expr *r;
+
+};
+
+class L_value : public Expr {
+	public:
+		L_value(Id* identifier, const char* str_literal, L_value* l_value, Expr* expr) : id(identifier), str(str_literal), lv(l_value), e(expr) {}
+		void print(std::ostream &out) const override {
+			align.begin(out, "L Value");
+			if(lv != nullptr)
+				out << *lv
+				    << align << " [" << std::endl;
+			align.no_line();
+			if(e != nullptr)
+				out << *e
+				    << align << " ]" << std::endl;
+			else if(id != nullptr)
+				out << *id;
+			else
+				out << align << str << std::endl;;
+			align.end(out);
+		}
+	private:
+		Id         *id;
+		const char *str;
+		L_value    *lv;
+		Expr       *e;
+};
+
+/* Statements */
+
+class Empty_stmt : public Stmt {
+	public:
+		Empty_stmt() {}
+		void print(std::ostream &out) const override {
+			align.begin(out, "; (empty statement)");
+			align.end(out);
+		}
+};
+
+class Assign : public Stmt {
+	public:
+		Assign(L_value* l_value, Expr* expr) : lv(l_value), e(expr) {}
+		void print(std::ostream &out) const override {
+			align.begin(out, "Assign Statement");
+			out << *lv
+			    << align << " <-" << std::endl;
+			align.no_line();
+			out	<< *e;
+			align.end(out);
+		}
+	private:
+		L_value *lv;
+		Expr    *e;
+};
+
+class Func_call : public Stmt, public Expr {
+	public:
+		Func_call(Id* identifier, Expr_list* exp_list) : id(identifier), e_list(exp_list) {}
+		void print(std::ostream &out) const override {
+			align.begin(out, "Function Call");
+			if(e_list == nullptr) align.no_line(); // factor ifs better?
+			out << *id
+			    << align << " ()" << std::endl;
+			if(e_list != nullptr) {
+				align.no_line();
+				out << *e_list;
+			}
+			align.end(out);
+		}
+	private:
+		Id        *id;
+		Expr_list *e_list;
+};
+
+class If : public Stmt {
+	public:
+		If(Cond* cond, Stmt* Then_stmt, Stmt* Else_stmt) : c(cond), Then(Then_stmt), Else(Else_stmt) {}
+		void print(std::ostream &out) const override {
+			align.begin(out, "If Statement");
+			out << align << " IF" << std::endl
+			    << *c
+			    << align << " THEN" << std::endl;
+			if(Else == nullptr)	align.no_line(); // better if factorization?
+			out << *Then;
+			if(Else != nullptr) {
+				out << align << " ELSE" << std::endl;
+				align.no_line();
+				out << *Else;
+			}
+			align.end(out);
+		}
+	private:
+		Cond *c;
+		Stmt *Then;
+		Stmt *Else;
+};
+
+class While : public Stmt {
+	public:
+		While(Cond* cond, Stmt* stmt) : c(cond), s(stmt) {}
+		void print(std::ostream &out) const override {
+			align.begin(out, "While Statement");
+			out << *c;
+			align.no_line();
+			out << *s;
+			align.end(out);
+		}
+	private:
+		Cond *c;
+		Stmt *s;
+};
+
+class Return : public Stmt {
+	public:
+		Return(Expr* expr) : e(expr) {}
+		void print(std::ostream &out) const override {
+			align.begin(out, "Return Statement");
+			if(e != nullptr) {
+				align.no_line();
+				out << *e;
+			}
+			align.end(out);
+		}
+	private:
+		Expr *e;
 };
 
 

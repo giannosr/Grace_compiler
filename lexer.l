@@ -19,18 +19,18 @@ C {P}|"\\"([ntr0\\\'\"]|x{X}{X})
 
 %%
 
-"and"     { return T_and; }
+"and"     { yylval.op = AND_OP; return T_and; }
 "char"    { return T_char; }
-"div"     { return T_div; }
+"div"     { yylval.op = DIV_OP; return T_div; }
 "do"      { return T_do; }
 "else"    { return T_else; }
 "fun"     { return T_fun; }
 "if"      { return T_if; }
 "int"     { return T_int; }
-"mod"     { return T_mod; }
+"mod"     { yylval.op = MOD_OP; return T_mod; }
 "not"     { return T_not; }
 "nothing" { return T_nothing; }
-"or"      { return T_or; }
+"or"      { yylval.op = OR_OP; return T_or; }
 "ref"     { return T_ref; }
 "return"  { return T_return; }
 "then"    { return T_then; }
@@ -40,14 +40,14 @@ C {P}|"\\"([ntr0\\\'\"]|x{X}{X})
 "<-"                 { return T_assign; }
 [\(\)\[\]\{\}\,\;\:] { return yytext[0]; }
 
-"<="             { return T_leq; }
-">="             { return T_geq; }
-[\+\-\*\=\#\<\>] { return yytext[0]; }
+"<="             { yylval.op = LEQ_OP; return T_leq; }
+">="             { yylval.op = GEQ_OP; return T_geq; }
+[\+\-\*\=\#\<\>] { yylval.op = yytext[0]; return yytext[0]; }
 
 {L}({L}|{D}|_)*  { yylval.id_name = strdup(yytext); return T_id; }
-{D}+             { yylval.num = atoi(yytext); return T_uint_const; }
-"\'"{C}"\'"      { return T_char_const; }
-"\""{C}+"\""     { return T_str_const; }
+{D}+             { yylval.num = atoll(yytext);      return T_uint_const; }
+"\'"{C}"\'"      { yylval.chr = strdup(yytext);     return T_char_const; }
+"\""{C}+"\""     { yylval.str = strdup(yytext);     return T_str_const; }
 
 [ \t\r]+         { /* do nothing (whitespace except new line) */ }
 
