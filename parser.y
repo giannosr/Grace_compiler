@@ -1,10 +1,21 @@
 %{
 #include <cstdio>
 #include <cstdlib>
+
 #include "ast.hpp"
+#include "runtime_syms.cpp"
 #include "lexer.hpp"
 
 print_align align;
+
+symbol_table st;
+
+const char *INT  = "int";
+const char *CHAR = "char";
+
+/* Basic Types (usefull in some AST operations) */
+Type Int_t(new Data_type(INT));
+Type Char_t(new Data_type(CHAR));
 %}
 
 %token T_and     "and"
@@ -68,14 +79,10 @@ print_align align;
 	char               op;
 }
 
-%type<ldef>   local_def
-%type<ldef>   func_def
-%type<ldef>   func_decl
-%type<ldef>   var_def
+%type<ldef>   local_def func_def func_decl var_def
 %type<hdr>    header
 %type<ldlist> local_def_list
-%type<blk>    block
-%type<blk>    stmt_list
+%type<blk>    block stmt_list
 %type<idlist> identifier_list
 %type<dtype>  data_type
 %type<type>   type
@@ -99,7 +106,10 @@ print_align align;
 %%
 
 program:
-  func_def { std::cout << "AST:\n" << *$1 << std::endl; }
+  func_def {
+  	// std::cout << "AST:\n" << *$1 << std::endl;
+    $1->sem();
+  }
 ;
 
 func_def:
@@ -122,7 +132,7 @@ fpar_def_list:
 
 fpar_def:
   identifier_list ':' fpar_type       { $$ = new Fpar_def(false, $1, $3); }
-| "ref" identifier_list ':' fpar_type { $$ = new Fpar_def(true, $2, $4); }
+| "ref" identifier_list ':' fpar_type { $$ = new Fpar_def(true,  $2, $4); }
 ;
 
 identifier_list:
@@ -131,8 +141,8 @@ identifier_list:
 ;
 
 data_type:
-  "int"  { $$ = new Data_type("int"); }
-| "char" { $$ = new Data_type("char"); }
+  "int"  { $$ = new Data_type(INT); }
+| "char" { $$ = new Data_type(CHAR); }
 ;
 
 type:
@@ -237,6 +247,17 @@ cond:
 
 %%
 
+/* necessary because C++ is dumb */
+bool check_fpt_eq(const Fpar_type* const a, const Fpar_type* const b) { return *a == *b; }
+
+std::vector<condensed_fpar_list_item>* get_condensed_rep_of_fpars(const Fpar_def_list* const fpdl) {
+	std::vector<condensed_fpar_list_item>* v = new std::vector<condensed_fpar_list_item>();
+	if(fpdl != nullptr)
+		for(const auto &fp : fpdl->item_list)
+			v->push_back(condensed_fpar_list_item(fp->get_fpt(), fp->get_idlist_size()));
+	return v;
+}
+
 void yyerror(const char *msg) {
     fprintf(stderr, "Line %d: %s\n", lineno, msg);
     exit(2);
@@ -244,7 +265,7 @@ void yyerror(const char *msg) {
 
 int main() {
     int res = yyparse();
-    if(res == 0) printf("Parsing Success!\n");
-    else         printf("Something went wrong...\n");
-    return res;
+	if(res == 0) printf("Parsing Success!\n");
+	else         printf("Something went wrong...\n");
+	return res;
 }

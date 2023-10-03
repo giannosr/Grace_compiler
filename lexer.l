@@ -30,7 +30,7 @@ C {P}|"\\"([ntr0\\\'\"]|x{X}{X})
 "mod"     { yylval.op = MOD_OP; return T_mod; }
 "not"     { return T_not; }
 "nothing" { return T_nothing; }
-"or"      { yylval.op = OR_OP; return T_or; }
+"or"      { yylval.op = OR_OP;  return T_or; }
 "ref"     { return T_ref; }
 "return"  { return T_return; }
 "then"    { return T_then; }
@@ -40,8 +40,8 @@ C {P}|"\\"([ntr0\\\'\"]|x{X}{X})
 "<-"                 { return T_assign; }
 [\(\)\[\]\{\}\,\;\:] { return yytext[0]; }
 
-"<="             { yylval.op = LEQ_OP; return T_leq; }
-">="             { yylval.op = GEQ_OP; return T_geq; }
+"<="             { yylval.op = LEQ_OP;    return T_leq; }
+">="             { yylval.op = GEQ_OP;    return T_geq; }
 [\+\-\*\=\#\<\>] { yylval.op = yytext[0]; return yytext[0]; }
 
 {L}({L}|{D}|_)*  { yylval.id_name = strdup(yytext); return T_id; }

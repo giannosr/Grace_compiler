@@ -1,19 +1,19 @@
 .PHONY: clean distclean default
 
 CC=g++
-CFLAGS=-Wall
+CFLAGS=-Wall -Wextra
 
 default: grc
 
-lexer.cpp: lexer.l
+lexer.cpp: lexer.l parser.hpp
 	flex -s -o lexer.cpp lexer.l
 
-lexer.o: lexer.cpp lexer.hpp parser.hpp ast.hpp
+lexer.o: lexer.cpp lexer.hpp parser.hpp ast.hpp symbol_table.hpp runtime_syms.cpp
 
 parser.hpp parser.cpp: parser.y
 	bison -dv -o parser.cpp parser.y
 
-parser.o: parser.cpp lexer.hpp ast.hpp
+parser.o: parser.cpp parser.hpp lexer.hpp ast.hpp symbol_table.hpp runtime_syms.cpp
 
 grc: lexer.o parser.o
 	$(CC) $(CFLAGS) -o grc lexer.o parser.o
