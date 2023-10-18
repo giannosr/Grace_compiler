@@ -9,6 +9,7 @@
 print_align align;
 
 symbol_table st;
+ll_symbol_table ll_st;
 
 const char *INT  = "int";
 const char *CHAR = "char";
@@ -101,14 +102,15 @@ Type Char_t(new Data_type(CHAR));
 
 %expect 1
 
-%define parse.error detailed
+// %define parse.error detailed
 
 %%
 
 program:
   func_def {
   	// std::cout << "AST:\n" << *$1 << std::endl;
-    $1->sem();
+    	$1->sem();
+	$1->llvm_compile_and_dump();
   }
 ;
 

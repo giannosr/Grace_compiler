@@ -7,8 +7,22 @@
 #include <cstring>
 
 #include "symbol_table.hpp"
+#include "ll_st.hpp"
 
 extern symbol_table st;
+
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/LegacyPassManager.h>
+#include <llvm/IR/Value.h>
+#include <llvm/IR/Verifier.h>
+#include <llvm/Transforms/InstCombine/InstCombine.h>
+#include <llvm/Transforms/Scalar.h>
+#include <llvm/Transforms/Scalar/GVN.h>
+#include <llvm/Transforms/Utils.h>
+
+#include "ll_st.hpp"
+
+extern ll_symbol_table ll_st;
 
 /* Global object to control print indentation
  * Callee is expected to use it
@@ -69,6 +83,102 @@ class AST {
 	public:
 		virtual void sem() {};
 		virtual void print(std::ostream &out) const = 0;
+		virtual llvm::Value* compile() const {return nullptr; }
+
+    void llvm_compile_and_dump(bool optimize=true) {
+    // Initialize
+    TheModule = std::make_unique<llvm::Module>("minibasic program", TheContext);
+      // add more opts
+    TheFPM = std::make_unique<llvm::legacy::FunctionPassManager>(TheModule.get());
+    if (optimize) {
+      TheFPM->add(llvm::createPromoteMemoryToRegisterPass());
+      TheFPM->add(llvm::createInstructionCombiningPass());
+      TheFPM->add(llvm::createReassociatePass());
+      TheFPM->add(llvm::createGVNPass());
+      TheFPM->add(llvm::createCFGSimplificationPass());
+    }
+    TheFPM->doInitialization();
+    // Initialize types
+    i8 = llvm::IntegerType::get(TheContext, 8);
+    i64 = llvm::IntegerType::get(TheContext, 64);
+ 
+  /*
+    // Initialize global variables
+    ArrayType *vars_type = ArrayType::get(i32, 26);
+    TheVars = new GlobalVariable(
+      *TheModule, vars_type, false, GlobalValue::PrivateLinkage,
+      ConstantAggregateZero::get(vars_type), "vars");
+    TheVars->setAlignment(MaybeAlign(16));
+    */
+    llvm::ArrayType *nl_type = llvm::ArrayType::get(i8, 2);
+    TheNL = new llvm::GlobalVariable(
+      *TheModule, nl_type, true, llvm::GlobalValue::PrivateLinkage,
+      llvm::ConstantArray::get(nl_type, {c8('\n'), c8('\0')}), "nl");
+    TheNL->setAlignment(llvm::MaybeAlign(1));
+/*
+    // Initialize library functions
+    FunctionType *writeInteger_type =
+      FunctionType::get(Type::getVoidTy(TheContext), {i64}, false);
+    TheWriteInteger =
+      Function::Create(writeInteger_type, Function::ExternalLinkage,
+                       "writeInteger", TheModule.get());
+    FunctionType *writeString_type =
+      FunctionType::get(Type::getVoidTy(TheContext),
+                        {PointerType::get(i8, 0)}, false);
+    TheWriteString =
+      Function::Create(writeString_type, Function::ExternalLinkage,
+                       "writeString", TheModule.get());
+
+*/
+    // Define and start the main function.
+    llvm::FunctionType *main_type = llvm::FunctionType::get(i64 /* possibly */, {}, false);
+    llvm::Function *main =
+      llvm::Function::Create(main_type, llvm::Function::ExternalLinkage,
+                       "main", TheModule.get());
+    llvm::BasicBlock *BB = llvm::BasicBlock::Create(TheContext, "entry", main);
+    Builder.SetInsertPoint(BB);
+
+    // Emit the program code.
+    compile(); //ftiaxnw compiler stin idia klasi
+    Builder.CreateRet(c64(0));
+
+    // Verify the IR.
+    bool bad = verifyModule(*TheModule, &llvm::errs());
+    if (bad) {
+      std::cerr << "The IR is bad!" << std::endl;
+      TheModule->print(llvm::errs(), nullptr);
+      std::exit(1);
+    }
+
+    // Optimize!
+    // TheFPM->run(*main);
+
+    // Print out the IR.
+    TheModule->print(llvm::outs(), nullptr);
+  }
+
+ protected:
+  static llvm::LLVMContext TheContext;
+  static llvm::IRBuilder<> Builder;
+  static std::unique_ptr<llvm::Module> TheModule;
+  static std::unique_ptr<llvm::legacy::FunctionPassManager> TheFPM;
+
+  // static GlobalVariable *TheVars;
+  static llvm::GlobalVariable *TheNL;
+/*
+  static Function *TheWriteInteger;
+  static Function *TheWriteString;
+*/
+
+  static llvm::Type *i8;
+  static llvm::Type *i64;
+
+  static llvm::ConstantInt* c8(char c) {
+    return llvm::ConstantInt::get(TheContext, llvm::APInt(8, c, true));
+  }
+  static llvm::ConstantInt* c64(int n) {
+    return llvm::ConstantInt::get(TheContext, llvm::APInt(64, n, true));
+  }
 };
 
 inline std::ostream &operator<<(std::ostream &out, const AST &ast) {
@@ -96,8 +206,9 @@ class Listable : public AST { // this was a really bad idea but it can't be chan
 		virtual unsigned long long get_idlist_size() const { return 0; }
 		virtual Fpar_type* get_fpt() const { return 0; }
 		virtual bool check_comp_with_fpt(Fpar_type* fpt) const { return 0; } // this is bad. Should I return *nullptr instead?
+		virtual llvm::Value* compile() const override { return nullptr; }
 }; // lol these funs are for specific types of listables but the way iterators work means we have to declare them here (all are for semantic analysis btw)
- 
+
 class Item_list : public AST {
 	public:
 		Item_list(const char* name) : item_list(), list_name(name) {}
@@ -481,6 +592,7 @@ class Local_def_list : public Item_list {
 
 class Stmt : public Listable {
 	public: // maybe print we are inside a stmt
+		virtual llvm::Value* compile() const override { return nullptr; }
 };
 
 class Block : public Stmt {
@@ -518,6 +630,12 @@ class Func_def : public Local_def {
 			b->sem();
 			st.pop_scope();
 		}
+
+        llvm::Value* compile() const override {
+            /* fill in later */
+            b->compile();
+			return nullptr;
+        }
 	private:
 		Header         *h;
 		Local_def_list *ldl;
@@ -548,6 +666,11 @@ class Int_const : public Expr {
 		bool check_comp_with_fpt(Fpar_type* fpt) const override {
 			return fpt->is_comp_with_t(&Int_t);
 		}
+
+    llvm::Value* compile() const override {
+      return c64(val);
+    }
+
 	private:
 		unsigned long long val;
 };
@@ -568,6 +691,11 @@ class Char_const : public Expr { // char is treated as a string. maybe evaluate 
 		bool check_comp_with_fpt(Fpar_type* fpt) const override {
 			return fpt->is_comp_with_t(&Char_t);
 		}
+
+    llvm::Value* compile() const override {
+      return c8(*ch);
+    }
+
 	private:
 		const char *ch;
 };
@@ -598,6 +726,16 @@ class UnOp : public Expr {
 		bool check_comp_with_fpt(Fpar_type* fpt) const override {
 			return fpt->is_comp_with_t(&Int_t);
 		}
+
+    llvm::Value* compile() const override {
+      llvm::Value* v = e->compile();
+      switch (op) {
+        case '+': return v;
+        case '-': return Builder.CreateNeg(v, "negtmp"); // gpt
+      }
+      return nullptr;
+    }
+
 	private:
 		char op;
 		Expr *e;
@@ -641,6 +779,19 @@ class BinOp : public Expr {
 		bool check_comp_with_fpt(Fpar_type* fpt) const override {
 			return fpt->is_comp_with_t(&Int_t);
 		}
+    
+    llvm::Value* compile() const override {
+      llvm::Value* lv = l->compile();
+      llvm::Value* rv = r->compile();
+      switch (op) {
+        case '+': return Builder.CreateAdd(lv, rv, "addtmp");
+        case '-': return Builder.CreateSub(lv, rv, "subtmp");
+        case '*': return Builder.CreateMul(lv, rv, "multmp");
+        case 'd': return Builder.CreateSDiv(lv, rv, "divtmp");
+        case 'm': return Builder.CreateSRem(lv, rv, "modtmp");
+      }
+      return nullptr;
+    }
 	private:
 		Expr *l;
 		char op;
@@ -660,6 +811,7 @@ class Expr_list : public Item_list {
 
 class Cond : public AST {
 	public:
+		virtual llvm::Value* compile() const override { return nullptr; }
 };
 
 class NotCond : public Cond {
@@ -676,6 +828,11 @@ class NotCond : public Cond {
 		void sem() {
 			c->sem();
 		}
+
+    llvm::Value* compile() const override {
+      llvm::Value *v = c->compile();
+      return Builder.CreateNot(v); // gpt
+    }
 	private:
 		Cond *c;
 };
@@ -697,6 +854,29 @@ class BinCond : public Cond {
 			l->sem();
 			r->sem();
 		}
+  
+    llvm::Value* compile() const override {
+      llvm::Value *lv = l->compile(), *rv = r->compile();
+      /*
+      case shortcircuit doesnt exist:
+      x and y -> if not x then false else y
+      x or y ->  if     x then true  else y
+      IfStmt IF = new If(new NotCond(x), ...)
+      delete IF ...
+      */
+
+      /*
+      if( !lv && op == 'AND_OP') return 0)
+      Builder.ICmpNE(lv, i64(0), ...);
+      basic blocks ...
+      retirn Biulder. ?const? (i64(0))
+      */
+      switch (op) { // gpt
+        case AND_OP: return Builder.CreateAnd(lv, rv, "andtmp");
+        case OR_OP:  return Builder.CreateOr(lv, rv, "ortmp");
+      }
+      return nullptr;
+    }
 	private:
 		Cond *l;
 		char op;
@@ -724,6 +904,20 @@ class BinOpCond : public Cond {
 				yyerror("Semantic Error: comparison between different types");
 			}
 		}
+
+    llvm::Value* compile() const override {
+      llvm::Value *lv = l->compile(), *rv = r->compile();
+      switch (op) { // gpt
+        case '=':    return Builder.CreateICmpEQ(lv, rv, "eqtmp");
+        case '#':    return Builder.CreateICmpNE(lv, rv, "netmp");
+        case '>':    return Builder.CreateICmpSGT(lv, rv, "sgttmp");
+        case '<':    return Builder.CreateICmpSLT(lv, rv, "slttmp");
+        case LEQ_OP: return Builder.CreateICmpSLE(lv, rv, "sletmp");
+        case GEQ_OP: return Builder.CreateICmpSGE(lv, rv, "sgetmp");
+      }
+      return nullptr;
+    }
+          
 	private:
 		Expr *l;
 		char op;
@@ -785,6 +979,64 @@ class L_value : public Expr {
 			if(del_after) delete t;
 			return res;
 		}
+
+    llvm::Value* compile() const override {
+      if(id != nullptr) {
+        const char* const name = id->get_name();
+        llvm::Value *v = ll_st.lookup(name, 0)->v;
+        if(v == nullptr) {
+          /* uninitialized variable, initialize to 0 (instead could create error) */
+          std::cerr << "[Warning] Use of uninitialized variable " << name << " (initialized to 0)" << std::endl;
+          v = Builder.CreateAlloca(i64, nullptr, name);
+          Builder.CreateStore(c64(0), v);
+          ll_st.new_symbol(name, v);
+        }
+        return Builder.CreateLoad(v, name);
+      }
+      else if(str != nullptr) {
+        return llvm::ConstantDataArray::getString(TheContext, str, true); // gpt
+      }
+      else {
+        // auto indices = std::vector<llvm::Value*>();
+        // llvm::Value* arrayPtr = arr_compile(/* indices */);
+		/* 
+		llvm::Value* a[indices.size()];
+		int i = 0;
+        for(const auto &index : indices) a[++i] = index;
+		// llvm::Value** a = &indices[0]; // convert vector to array
+		*/
+        // llvm::Value* elementPtr = Builder.CreateGEP(arrayPtr, a);
+        // return Builder.CreateLoad(elementPtr);
+        return Builder.CreateLoad(arr_compile());
+      }
+    }
+
+    llvm::Value* arr_compile(/* std::vector<llvm::Value*> &indicies */) const {
+      if(id != nullptr) {
+        const char* const name = id->get_name();
+        llvm::Value *v = ll_st.lookup(name, 0)->v;
+        if(v == nullptr) {
+          /* uninitialized ARRAY, initialize to 0s (instead could create error) */
+          std::cerr << "[Warning] Use of uninitialized ARRAY " << name << " (initialized to 0s)" << std::endl;
+          // v = INITIALIZE ARRAY (FIX)
+          ll_st.new_symbol(name, v);
+        }
+        return v; //Builder.CreateLoad(v, name);
+      }
+      if(str != nullptr) {
+        return llvm::ConstantDataArray::getString(TheContext, str, true); // gpt
+      }
+      llvm::Value* v = lv->arr_compile(/* indicies */);
+      // indicies.push_back(e->compile());
+      // return v;
+	  return Builder.CreateGEP(v, e->compile());
+    }
+
+    const char* get_name() {
+      if(id == nullptr)
+        std::cerr << "Compiler Bug: you are getting name of non identifier lvalue" << std::endl;
+      return id->get_name();
+    }
 	private:
 		Id         *id;
 		const char *str;
@@ -826,6 +1078,17 @@ class Assign : public Stmt {
 			}
 			if(del_after) delete t;
 		}
+
+    llvm::Value* compile() const override {
+      const char* const name = lv->get_name();
+      llvm::Value *v = ll_st.lookup(name, 1)->v;
+      if(v == nullptr) {
+        v = Builder.CreateAlloca(i64, nullptr, name); // gpt
+        ll_st.new_symbol(name, v);
+      }
+      Builder.CreateStore(e->compile(), v);
+      return nullptr;
+    }
 	private:
 		L_value *lv;
 		Expr    *e;
@@ -912,7 +1175,49 @@ class If : public Stmt {
 			Then->sem();
 			if(Else != nullptr) Else->sem();
 		}
-	private:
+
+    llvm::Value* compile() const override {
+/*
+    if cond then s1 else s2
+
+    BB:
+      ...
+      %v = compile condition
+      %if_cond = icmp ne i32 %v, i32 0
+      br $if_cond, label %L1, label %L2
+
+    L1:
+      s1
+      br label L3
+
+    L2:
+      s2
+      br label L3
+
+    L3:
+      ...
+*/
+    llvm::Value *v = c->compile();
+    llvm::Value *cond = Builder.CreateICmpNE(v, c64(0), "if_cond");
+    llvm::Function *TheFunction = Builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock *ThenBB =
+      llvm::BasicBlock::Create(TheContext, "then", TheFunction);
+    llvm::BasicBlock *ElseBB =
+      llvm::BasicBlock::Create(TheContext, "else", TheFunction);
+    llvm::BasicBlock *AfterBB =
+      llvm::BasicBlock::Create(TheContext, "endif", TheFunction);
+    Builder.CreateCondBr(cond, ThenBB, ElseBB);
+    Builder.SetInsertPoint(ThenBB);
+    Then->compile();
+    Builder.CreateBr(AfterBB);
+    Builder.SetInsertPoint(ElseBB);
+    if (Else != nullptr) Else->compile();
+    Builder.CreateBr(AfterBB);
+    Builder.SetInsertPoint(AfterBB);
+    return nullptr;
+  }
+
+  private:
 		Cond *c;
 		Stmt *Then;
 		Stmt *Else;
@@ -933,6 +1238,27 @@ class While : public Stmt {
 			c->sem();
 			s->sem();
 		}
+
+    llvm::Value* compile() const override {
+      // c->compile
+      llvm::Function *TheFunction = Builder.GetInsertBlock()->getParent();
+      llvm::BasicBlock* loopHeader = llvm::BasicBlock::Create(TheContext, "loop_header", TheFunction);
+      llvm::BasicBlock* loopBody = llvm::BasicBlock::Create(TheContext, "loop_body", TheFunction);
+      llvm::BasicBlock* loopEnd = llvm::BasicBlock::Create(TheContext, "loop_end", TheFunction);
+
+      Builder.CreateBr(loopHeader);
+      Builder.SetInsertPoint(loopHeader);
+      llvm::Value *v = c->compile();
+      llvm::Value *cond = Builder.CreateICmpNE(v, c64(0), "loop_cond");
+      Builder.CreateCondBr(cond, loopBody, loopEnd);
+      
+      Builder.SetInsertPoint(loopBody);
+      s->compile();
+      Builder.CreateBr(loopHeader);
+
+      Builder.SetInsertPoint(loopEnd);
+	  return nullptr;
+    }
 	private:
 		Cond *c;
 		Stmt *s;
