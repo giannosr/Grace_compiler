@@ -1,7 +1,10 @@
 .PHONY: clean distclean default
 
+LLVMCONFIG=llvm-config
+
 CC=g++
-CFLAGS=-Wall -Wextra
+CXXFLAGS=-Wall -g `$(LLVMCONFIG) --cxxflags`
+LDFLAGS=`$(LLVMCONFIG) --ldflags --system-libs --libs all`
 
 default: grc
 
@@ -15,8 +18,8 @@ parser.hpp parser.cpp: parser.y
 
 parser.o: parser.cpp parser.hpp lexer.hpp ast.hpp ast.cpp symbol_table.hpp runtime_syms.cpp ll_st.hpp
 
-grc: lexer.o parser.o
-	$(CC) $(CFLAGS) -o grc lexer.o parser.o
+grc: lexer.o parser.o ast.o
+	$(CC) $(CXXFLAGS) -o grc $^ $(LDFLAGS)
 
 clean:
 	$(RM) lexer.cpp parser.cpp parser.hpp parser.output lexer.o parser.o
