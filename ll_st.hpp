@@ -26,7 +26,7 @@ class ll_symbol_table {
     void push_scope() { scopes.push_back(std::map<std::string, ll_ste*>()); }
     void pop_scope()  { scopes.pop_back(); }
     void new_symbol(const char* const name, llvm::Value* v) {
-      scopes.back().insert({std::string(name), new ll_ste(v)});
+      scopes.back()[std::string(name)] = new ll_ste(v);
     }
     ll_ste* lookup(const std::string name, bool assigning) const {
       for(auto s = scopes.rbegin(); s != scopes.rend(); ++s) {

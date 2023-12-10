@@ -87,7 +87,7 @@ class AST {
 
     void llvm_compile_and_dump(bool optimize=true) {
     // Initialize
-    TheModule = std::make_unique<llvm::Module>("minibasic program", TheContext);
+    TheModule = std::make_unique<llvm::Module>("grace program", TheContext);
       // add more opts
     TheFPM = std::make_unique<llvm::legacy::FunctionPassManager>(TheModule.get());
     if (optimize) {
@@ -609,6 +609,10 @@ class Stmt_list : public Block {
 		void sem() {
 			for(auto const &s : s_list.item_list) s->sem();
 		}
+		llvm::Value* compile() const override {
+			for(auto const &s : s_list.item_list) s->compile();
+			return nullptr;
+		}
 	private:
 		Item_list s_list;
 };
@@ -632,8 +636,10 @@ class Func_def : public Local_def {
 		}
 
         llvm::Value* compile() const override {
-            /* fill in later */
+            /* fill in later */		
+            ll_st.push_scope();
             b->compile();
+            ll_st.pop_scope();
 			return nullptr;
         }
 	private:
@@ -983,15 +989,18 @@ class L_value : public Expr {
     llvm::Value* compile() const override {
       if(id != nullptr) {
         const char* const name = id->get_name();
-        llvm::Value *v = ll_st.lookup(name, 0)->v;
-        if(v == nullptr) {
+        ll_ste* ste = ll_st.lookup(name, 0);
+        llvm::Value *v;
+        if(ste == nullptr) {
           /* uninitialized variable, initialize to 0 (instead could create error) */
           std::cerr << "[Warning] Use of uninitialized variable " << name << " (initialized to 0)" << std::endl;
           v = Builder.CreateAlloca(i64, nullptr, name);
           Builder.CreateStore(c64(0), v);
           ll_st.new_symbol(name, v);
         }
-        return Builder.CreateLoad(v, name);
+	else
+		v = ste->v;
+        return Builder.CreateLoad(i64, v, name);
       }
       else if(str != nullptr) {
         return llvm::ConstantDataArray::getString(TheContext, str, true); // gpt
@@ -1007,21 +1016,24 @@ class L_value : public Expr {
 		*/
         // llvm::Value* elementPtr = Builder.CreateGEP(arrayPtr, a);
         // return Builder.CreateLoad(elementPtr);
-        return Builder.CreateLoad(arr_compile());
+        return arr_compile();
       }
     }
 
     llvm::Value* arr_compile(/* std::vector<llvm::Value*> &indicies */) const {
       if(id != nullptr) {
         const char* const name = id->get_name();
-        llvm::Value *v = ll_st.lookup(name, 0)->v;
-        if(v == nullptr) {
+        ll_ste* ste = ll_st.lookup(name, 0);
+        llvm::Value *v;
+        if(ste == nullptr) {
           /* uninitialized ARRAY, initialize to 0s (instead could create error) */
           std::cerr << "[Warning] Use of uninitialized ARRAY " << name << " (initialized to 0s)" << std::endl;
           // v = INITIALIZE ARRAY (FIX)
           ll_st.new_symbol(name, v);
         }
-        return v; //Builder.CreateLoad(v, name);
+	else
+		v = ste->v;
+        return Builder.CreateLoad(i64, v, name);
       }
       if(str != nullptr) {
         return llvm::ConstantDataArray::getString(TheContext, str, true); // gpt
@@ -1029,7 +1041,7 @@ class L_value : public Expr {
       llvm::Value* v = lv->arr_compile(/* indicies */);
       // indicies.push_back(e->compile());
       // return v;
-	  return Builder.CreateGEP(v, e->compile());
+	  return v;
     }
 
     const char* get_name() {
@@ -1081,11 +1093,14 @@ class Assign : public Stmt {
 
     llvm::Value* compile() const override {
       const char* const name = lv->get_name();
-      llvm::Value *v = ll_st.lookup(name, 1)->v;
-      if(v == nullptr) {
+      ll_ste* ste = ll_st.lookup(name, 1);
+      llvm::Value *v;
+      if(ste == nullptr) {
         v = Builder.CreateAlloca(i64, nullptr, name); // gpt
         ll_st.new_symbol(name, v);
       }
+      else
+	      v = ste->v;
       Builder.CreateStore(e->compile(), v);
       return nullptr;
     }
@@ -1248,8 +1263,7 @@ class While : public Stmt {
 
       Builder.CreateBr(loopHeader);
       Builder.SetInsertPoint(loopHeader);
-      llvm::Value *v = c->compile();
-      llvm::Value *cond = Builder.CreateICmpNE(v, c64(0), "loop_cond");
+      llvm::Value *cond = c->compile();
       Builder.CreateCondBr(cond, loopBody, loopEnd);
       
       Builder.SetInsertPoint(loopBody);

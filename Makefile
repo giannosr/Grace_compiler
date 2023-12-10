@@ -3,7 +3,7 @@
 LLVMCONFIG=llvm-config
 
 CC=g++
-CXXFLAGS=-Wall -g `$(LLVMCONFIG) --cxxflags`
+CXXFLAGS=-Wall -Wextra -g `$(LLVMCONFIG) --cxxflags`
 LDFLAGS=`$(LLVMCONFIG) --ldflags --system-libs --libs all`
 
 default: grc
@@ -22,7 +22,7 @@ grc: lexer.o parser.o ast.o
 	$(CC) $(CXXFLAGS) -o grc $^ $(LDFLAGS)
 
 clean:
-	$(RM) lexer.cpp parser.cpp parser.hpp parser.output lexer.o parser.o
+	$(RM) lexer.cpp parser.cpp parser.hpp parser.output lexer.o parser.o ast.o
 
 distclean: clean
 	$(RM) grc
