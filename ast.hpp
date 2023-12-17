@@ -855,34 +855,37 @@ class BinCond : public Cond {
 			out << *r;
 			align.end(out);
 		}
-		
+
 		void sem() {
 			l->sem();
 			r->sem();
 		}
-  
-    llvm::Value* compile() const override {
-      llvm::Value *lv = l->compile(), *rv = r->compile();
-      /*
-      case shortcircuit doesnt exist:
-      x and y -> if not x then false else y
-      x or y ->  if     x then true  else y
-      IfStmt IF = new If(new NotCond(x), ...)
-      delete IF ...
-      */
 
-      /*
-      if( !lv && op == 'AND_OP') return 0)
-      Builder.ICmpNE(lv, i64(0), ...);
-      basic blocks ...
-      retirn Biulder. ?const? (i64(0))
-      */
-      switch (op) { // gpt
-        case AND_OP: return Builder.CreateAnd(lv, rv, "andtmp");
-        case OR_OP:  return Builder.CreateOr(lv, rv, "ortmp");
-      }
-      return nullptr;
-    }
+	llvm::Value* compile() const override { // short-circuiting
+		llvm::BasicBlock *Prev = Builder.GetInsertBlock();
+		llvm::Function *TheFunction = Prev->getParent();
+		llvm::BasicBlock *Full = llvm::BasicBlock::Create(TheContext, "full evaluation", TheFunction);
+		llvm::BasicBlock *End  = llvm::BasicBlock::Create(TheContext, "short-circuit end", TheFunction);
+
+		Builder.SetInsertPoint(End);
+		llvm::PHINode *phi_res = Builder.CreatePHI(llvm::IntegerType::get(TheContext, 1), 2, "result");
+
+		Builder.SetInsertPoint(Prev);
+		llvm::Value *lv = l->compile();
+		phi_res->addIncoming(lv, Builder.GetInsertBlock()); // current block may have changed due to l->compile
+		switch (op) {
+			case AND_OP: Builder.CreateCondBr(lv, Full, End); break;
+			case OR_OP:  Builder.CreateCondBr(lv, End, Full); break;
+		}
+
+		Builder.SetInsertPoint(Full);
+		llvm::Value *rv = r->compile();
+		phi_res->addIncoming(rv, Builder.GetInsertBlock());
+		Builder.CreateBr(End);
+
+		Builder.SetInsertPoint(End);
+		return phi_res;
+	}
 	private:
 		Cond *l;
 		char op;
@@ -1006,49 +1009,45 @@ class L_value : public Expr {
         return llvm::ConstantDataArray::getString(TheContext, str, true); // gpt
       }
       else {
-        // auto indices = std::vector<llvm::Value*>();
-        // llvm::Value* arrayPtr = arr_compile(/* indices */);
-		/* 
-		llvm::Value* a[indices.size()];
-		int i = 0;
-        for(const auto &index : indices) a[++i] = index;
-		// llvm::Value** a = &indices[0]; // convert vector to array
-		*/
-        // llvm::Value* elementPtr = Builder.CreateGEP(arrayPtr, a);
-        // return Builder.CreateLoad(elementPtr);
         return arr_compile();
       }
     }
 
     llvm::Value* arr_compile(/* std::vector<llvm::Value*> &indicies */) const {
-      if(id != nullptr) {
-        const char* const name = id->get_name();
+      const char* const name = get_arr_name();
+      if(name != nullptr) {
         ll_ste* ste = ll_st.lookup(name, 0);
         llvm::Value *v;
         if(ste == nullptr) {
           /* uninitialized ARRAY, initialize to 0s (instead could create error) */
           std::cerr << "[Warning] Use of uninitialized ARRAY " << name << " (initialized to 0s)" << std::endl;
-          // v = INITIALIZE ARRAY (FIX)
+          //v = arr_init(name);
           ll_st.new_symbol(name, v);
         }
-	else
-		v = ste->v;
+        else 
+          v = ste->v;
         return Builder.CreateLoad(i64, v, name);
       }
-      if(str != nullptr) {
-        return llvm::ConstantDataArray::getString(TheContext, str, true); // gpt
-      }
-      llvm::Value* v = lv->arr_compile(/* indicies */);
-      // indicies.push_back(e->compile());
-      // return v;
-	  return v;
+      else
+        return str_compile();
     }
 
-    const char* get_name() {
+	llvm::Value* str_compile() const {
+		if(str != nullptr) return llvm::ConstantDataArray::getString(TheContext, str, true); // gpt
+		// else probably gep(lv->str_compile());
+	}
+
+    const char* get_name() const {
       if(id == nullptr)
         std::cerr << "Compiler Bug: you are getting name of non identifier lvalue" << std::endl;
       return id->get_name();
     }
+
+	const char* get_arr_name() const {
+		if(id != nullptr)  return id->get_name();
+		if(str != nullptr) return nullptr;
+		return lv->get_arr_name();
+	}
 	private:
 		Id         *id;
 		const char *str;
@@ -1213,7 +1212,6 @@ class If : public Stmt {
       ...
 */
     llvm::Value *v = c->compile();
-    llvm::Value *cond = Builder.CreateICmpNE(v, c64(0), "if_cond");
     llvm::Function *TheFunction = Builder.GetInsertBlock()->getParent();
     llvm::BasicBlock *ThenBB =
       llvm::BasicBlock::Create(TheContext, "then", TheFunction);
@@ -1221,7 +1219,7 @@ class If : public Stmt {
       llvm::BasicBlock::Create(TheContext, "else", TheFunction);
     llvm::BasicBlock *AfterBB =
       llvm::BasicBlock::Create(TheContext, "endif", TheFunction);
-    Builder.CreateCondBr(cond, ThenBB, ElseBB);
+    Builder.CreateCondBr(v, ThenBB, ElseBB);
     Builder.SetInsertPoint(ThenBB);
     Then->compile();
     Builder.CreateBr(AfterBB);
