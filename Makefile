@@ -3,7 +3,7 @@
 LLVMCONFIG=llvm-config
 
 CC=g++
-CXXFLAGS=-Wall -Wextra -g `$(LLVMCONFIG) --cxxflags`
+CXXFLAGS=-Wall -Wextra -Wpedantic -Wno-parentheses -Wno-dangling-else -g `$(LLVMCONFIG) --cxxflags`
 LDFLAGS=`$(LLVMCONFIG) --ldflags --system-libs --libs all`
 
 default: grc

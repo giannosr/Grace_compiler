@@ -99,7 +99,7 @@ class AST {
     }
     TheFPM->doInitialization();
     // Initialize types
-    i8 = llvm::IntegerType::get(TheContext, 8);
+    i8  = llvm::IntegerType::get(TheContext, 8);
     i64 = llvm::IntegerType::get(TheContext, 64);
  
   /*
@@ -130,17 +130,8 @@ class AST {
                        "writeString", TheModule.get());
 
 */
-    // Define and start the main function.
-    llvm::FunctionType *main_type = llvm::FunctionType::get(i64 /* possibly */, {}, false);
-    llvm::Function *main =
-      llvm::Function::Create(main_type, llvm::Function::ExternalLinkage,
-                       "main", TheModule.get());
-    llvm::BasicBlock *BB = llvm::BasicBlock::Create(TheContext, "entry", main);
-    Builder.SetInsertPoint(BB);
-
     // Emit the program code.
-    compile(); //ftiaxnw compiler stin idia klasi
-    Builder.CreateRet(c64(0));
+    compile();
 
     // Verify the IR.
     bool bad = verifyModule(*TheModule, &llvm::errs());
@@ -207,6 +198,7 @@ class Listable : public AST { // this was a really bad idea but it can't be chan
 		virtual Fpar_type* get_fpt() const { return 0; }
 		virtual bool check_comp_with_fpt(Fpar_type* fpt) const { return 0; } // this is bad. Should I return *nullptr instead?
 		virtual llvm::Value* compile() const override { return nullptr; }
+		virtual void insert_ll_to(std::vector<llvm::Type*>& fpars) const { return; }
 }; // lol these funs are for specific types of listables but the way iterators work means we have to declare them here (all are for semantic analysis btw)
 
 class Item_list : public AST {
@@ -251,7 +243,7 @@ class Under_construction : public Listable {
 
 class Id : public Listable {
 	public:
-		Id(const char* id_name) : name(id_name) {}
+		Id(const char* const id_name) : name(id_name) {}
 		void print(std::ostream &out) const override {
 			align.begin(out, "Identifier", true);
 			out << " " << name << std::endl;
@@ -259,6 +251,7 @@ class Id : public Listable {
 		}
 
 		const char* get_name() const override { return name; }
+		void set_main() { delete name; name = "main"; }
 	private:
 		const char* name;
 };
@@ -286,6 +279,15 @@ class Data_type : public AST {
 		bool operator==(const Data_type &dt) const {
 			return !strcmp(data_type_name, dt.get_dt_name());
 		}
+
+		llvm::Type* get_ll_type() const {
+			if(!strcmp(data_type_name, "char")) return i8;
+			else                                return i64;
+		}
+		void create_default_ret() const {
+			if(!strcmp(data_type_name, "char")) Builder.CreateRet(c8(0));
+			else                                Builder.CreateRet(c64(0));
+		}
 	private:
 		const char* data_type_name;
 		bool cleanup;
@@ -304,7 +306,7 @@ class Array_tail_decl : public AST {
 			align.end(out);
 		}
 
-		void sem() {
+		void sem() override {
 			for(const auto &n : sizes)
 				if(n == 0) {
 					std::cout << *this;
@@ -314,6 +316,12 @@ class Array_tail_decl : public AST {
 
 		bool operator==(const Array_tail_decl &atd) const {
 			return sizes == atd.sizes;
+		}
+
+		llvm::Type* ll_type(llvm::Type* t) const {
+			for(auto n = sizes.rbegin(); n != sizes.rend(); ++n)
+				t = llvm::ArrayType::get(t, *n);
+			return t;
 		}
 
 		// no private because makes above == operator easier lol
@@ -369,8 +377,12 @@ class Type : public AST {
 			}
 		}
 
-		void sem() {
-			if(atd != nullptr) atd->sem();
+		void sem() override { if(atd != nullptr) atd->sem(); }
+
+		llvm::Type* get_ll_type() const {
+			llvm::Type* t = dt->get_ll_type();
+			if(atd != nullptr) return atd->ll_type(t);
+			return t;
 		}
 
 		// no private because it's easier for inheritance
@@ -411,12 +423,22 @@ class Var_def : public Local_def {
 			align.end(out);
 		}
 
-		void sem() {
+		void sem() override {
 			for(const auto &id : Identifier_list->item_list)
 				st.new_symbol(id->get_name(), false, of_type);
 			// Here make sure n>0 in array def and NOT in the prev point
 			// check type
 			of_type->sem();
+		}
+
+		llvm::Value* compile() const override {
+			for(const auto &id : Identifier_list->item_list) {
+				const char* const name = id->get_name();
+				llvm::Type  *t = of_type->get_ll_type();
+				llvm::Value *v = Builder.CreateAlloca(t, nullptr, name);
+				ll_st.new_symbol(name, v);
+			}
+			return nullptr;
 		}
 	private:
 		Id_list *Identifier_list;
@@ -464,7 +486,7 @@ class Fpar_type : public Type {
 			if(no_size_array)
 				t->atd->sizes.push_front(1); // fuck the rules
 			return t;
-		} 
+		}
 		bool is_comp_with_t(const Type* const t) {
 			if(no_size_array) {
 				Type *p = new Type(*t); // we are gonna modify it so we copy
@@ -502,16 +524,35 @@ class Fpar_def : public Listable {
 			align.end(out);
 		}
 
-		void sem() {
+		void sem() override {
 			if(fpt->is_array() && !ref)
 				yyerror("Semantic Error: array types can only be passed by reference to functions");
 			for(const auto &id : idl->item_list) st.new_symbol(id->get_name(), false, fpt->to_type());
 			// because of this line and particuarly the call to_type() if the symbol table is destroyed before the end of the program there will be a memory leak
 			// It is necessary because the rest of the program needs the stentry to contain a type, not a formal type
 		}
-
+		
 		unsigned long long get_idlist_size() const override { return idl->item_list.size(); }
 		Fpar_type* get_fpt() const override { return fpt; }
+		
+		void insert_ll_to(std::vector<llvm::Type*>& fpars) const override { // for header compile
+			// since fpt inherits from t, this is implemented by the Type class
+			// so it ignores the case it has an array of unknown size
+			// that case will be converted to a pointer to the rest of the array type because it is always passed by refrenece (due to semantic analysis)
+			llvm::Type *t = fpt->get_ll_type();
+			// if(ref) t = make_pointer(t);
+			fpars.insert(fpars.end(), get_idlist_size(), t);
+		}
+		llvm::Value* compile() const override { // for including the fpar in the scope/activation record
+			for(const auto &id : idl->item_list) {
+				const char* const name = id->get_name();
+				llvm::Type  *t = fpt->get_ll_type();
+				// if(ref) t = make_pointer(t);
+				llvm::Value *v = Builder.CreateAlloca(t, nullptr, name);
+				ll_st.new_symbol(name, v);
+			}
+			return nullptr;
+		}
 	private:
 		bool      ref;
 		Id_list   *idl;
@@ -547,6 +588,15 @@ class Ret_type : public AST {
 		}
 
 		bool is_nothing() const { return nothing; }
+
+		llvm::Type* get_ll_type() const {
+			if(nothing) return llvm::Type::getVoidTy(TheContext);
+			else        return dt->get_ll_type();
+		}
+		void create_default_ret() const {
+			if(nothing) Builder.CreateRetVoid();
+			else        dt->create_default_ret();
+		}
 	private:
 		Data_type *dt;
 		bool      nothing;
@@ -565,7 +615,7 @@ class Header : public Func_decl {
 			align.end(out);
 		}
 
-		void sem() { st.new_symbol(name->get_name(), true, nullptr, rtype, params, true); } // this is called by Func_decl so it is always a declaration
+		void sem() override { st.new_symbol(name->get_name(), true, nullptr, rtype, params, true); } // this is called by Func_decl so it is always a declaration
 		void semdef() { // this is only called by Func_def
 			st.new_symbol(name->get_name(), true, nullptr, rtype, params); // maybe convert rtype to str and params to condensed vector here?? How will this affect ret type checking in sem later??
 			st.set_next_scope_owner_latest_symbol();
@@ -575,18 +625,39 @@ class Header : public Func_decl {
 				for(const auto &fpd : params->item_list)
 					fpd->sem();
 		}
+
+		llvm::Function* make_ll_fun() const {
+			std::vector<llvm::Type*> ll_fpars;
+			if(params != nullptr)
+				for(const auto &fpd : params->item_list)
+					fpd->insert_ll_to(ll_fpars);
+			llvm::FunctionType *f_type = llvm::FunctionType::get(rtype->get_ll_type(), ll_fpars, false);
+			return llvm::Function::Create(f_type, linkage,
+					name->get_name(), TheModule.get());
+		}
+
+		void set_main() { name->set_main(); linkage = llvm::Function::ExternalLinkage;  }
+		void create_default_ret() const { rtype->create_default_ret(); }
+		void push_ll_formal_params() const {
+			if(params != nullptr)
+				for(const auto &fpd : params->item_list)
+					fpd->compile(); // make it similar to Var_decl
+		}
 	private:
 		Id            *name;
 		Fpar_def_list *params;
 		Ret_type      *rtype;
+
+		llvm::GlobalValue::LinkageTypes linkage = llvm::Function::InternalLinkage;
 };
 
 class Local_def_list : public Item_list {
 	public:
 		Local_def_list() : Item_list("Local Definition List") {}
-
-		void sem() {
-			for(const auto &it : item_list) it->sem();
+		void sem() override { for(const auto &it : item_list) it->sem(); }
+		llvm::Value* compile() const override {
+			for(const auto &it : item_list) it->compile();
+			return nullptr;
 		}
 };
 
@@ -606,9 +677,7 @@ class Stmt_list : public Block {
 		Stmt_list() : s_list("Statement List") {}
 		void append(Stmt *s) override { s_list.append(s); }
 		void print(std::ostream &out) const override { s_list.print(out); }
-		void sem() {
-			for(auto const &s : s_list.item_list) s->sem();
-		}
+		void sem() override { for(auto const &s : s_list.item_list) s->sem(); }
 		llvm::Value* compile() const override {
 			for(auto const &s : s_list.item_list) s->compile();
 			return nullptr;
@@ -628,20 +697,29 @@ class Func_def : public Local_def {
 			align.end(out);
 		}
 
-		void sem() {
+		void sem() override {
 			h->semdef(); // pushes a scope because we are in a function def
 			ldl->sem();
 			b->sem();
 			st.pop_scope();
 		}
 
-        llvm::Value* compile() const override {
-            /* fill in later */		
-            ll_st.push_scope();
-            b->compile();
-            ll_st.pop_scope();
+		llvm::Value* compile() const override {
+			llvm::Function* f = h->make_ll_fun();
+			llvm::BasicBlock *FunB = llvm::BasicBlock::Create(TheContext, "entry", f);
+			llvm::BasicBlock *Prev = Builder.GetInsertBlock();
+			Builder.SetInsertPoint(FunB);
+			ll_st.push_scope();
+			h->push_ll_formal_params();
+			ldl->compile();
+			b->compile();
+			h->create_default_ret(); // just in case no return statement exists
+			ll_st.pop_scope();
+			Builder.SetInsertPoint(Prev);
 			return nullptr;
-        }
+		}
+
+		void set_main() const { h->set_main(); }
 	private:
 		Header         *h;
 		Local_def_list *ldl;
@@ -673,9 +751,7 @@ class Int_const : public Expr {
 			return fpt->is_comp_with_t(&Int_t);
 		}
 
-    llvm::Value* compile() const override {
-      return c64(val);
-    }
+		llvm::Value* compile() const override { return c64(val); }
 
 	private:
 		unsigned long long val;
@@ -698,12 +774,10 @@ class Char_const : public Expr { // char is treated as a string. maybe evaluate 
 			return fpt->is_comp_with_t(&Char_t);
 		}
 
-    llvm::Value* compile() const override {
-      return c8(*ch);
-    }
+		llvm::Value* compile() const override { return c8(*ch); }
 
 	private:
-		const char *ch;
+		const char * const ch;
 };
 
 /* Func_call is also an expression but is a statement too so it's defined later */
@@ -719,7 +793,7 @@ class UnOp : public Expr {
 			align.end(out);
 		}
 
-		void sem() {
+		void sem() override {
 			if(!e->check_type(&Int_t))
 				yyerror("Semantic Error: Operant of unary operator must be of type int");
 		}
@@ -766,7 +840,7 @@ class BinOp : public Expr {
 			align.end(out);
 		}
 
-		void sem() {
+		void sem() override {
 			if(!l->check_type(&Int_t)) {
 				yyerror("Sematnic Error: left argument of binary operator must be of type int. op was ");
 				std::cout << op;
@@ -786,18 +860,18 @@ class BinOp : public Expr {
 			return fpt->is_comp_with_t(&Int_t);
 		}
     
-    llvm::Value* compile() const override {
-      llvm::Value* lv = l->compile();
-      llvm::Value* rv = r->compile();
-      switch (op) {
-        case '+': return Builder.CreateAdd(lv, rv, "addtmp");
-        case '-': return Builder.CreateSub(lv, rv, "subtmp");
-        case '*': return Builder.CreateMul(lv, rv, "multmp");
-        case 'd': return Builder.CreateSDiv(lv, rv, "divtmp");
-        case 'm': return Builder.CreateSRem(lv, rv, "modtmp");
-      }
-      return nullptr;
-    }
+		llvm::Value* compile() const override {
+			llvm::Value* lv = l->compile();
+			llvm::Value* rv = r->compile();
+			switch (op) {
+				case '+':    return Builder.CreateAdd(lv, rv, "addtmp");
+				case '-':    return Builder.CreateSub(lv, rv, "subtmp");
+				case '*':    return Builder.CreateMul(lv, rv, "multmp");
+				case DIV_OP: return Builder.CreateSDiv(lv, rv, "divtmp");
+				case MOD_OP: return Builder.CreateSRem(lv, rv, "modtmp");
+			}
+			return nullptr; // should not reach here
+		}
 	private:
 		Expr *l;
 		char op;
@@ -810,9 +884,7 @@ class Expr_list : public Item_list {
 			this->append(expr);
 		}
 
-		void sem() {
-			for(auto const &expr : item_list) expr->sem();
-		}
+		void sem() override { for(auto const &expr : item_list) expr->sem(); }
 };
 
 class Cond : public AST {
@@ -831,14 +903,8 @@ class NotCond : public Cond {
 			align.end(out);
 		}
 
-		void sem() {
-			c->sem();
-		}
-
-    llvm::Value* compile() const override {
-      llvm::Value *v = c->compile();
-      return Builder.CreateNot(v); // gpt
-    }
+		void sem() override { c->sem();	}
+		llvm::Value* compile() const override {	return Builder.CreateNot(c->compile());	}
 	private:
 		Cond *c;
 };
@@ -856,7 +922,7 @@ class BinCond : public Cond {
 			align.end(out);
 		}
 
-		void sem() {
+		void sem() override {
 			l->sem();
 			r->sem();
 		}
@@ -905,7 +971,7 @@ class BinOpCond : public Cond {
 			align.end(out);
 		}
 
-		void sem() {
+		void sem() override {
 			bool valid = l->check_type(&Int_t) && r->check_type(&Int_t)
 			          || l->check_type(&Char_t) && r->check_type(&Char_t);
 			if(!valid) {
@@ -995,12 +1061,9 @@ class L_value : public Expr {
         ll_ste* ste = ll_st.lookup(name, 0);
         llvm::Value *v;
         if(ste == nullptr) {
-          /* uninitialized variable, initialize to 0 (instead could create error) */
-          std::cerr << "[Warning] Use of uninitialized variable " << name << " (initialized to 0)" << std::endl;
-          v = Builder.CreateAlloca(i64, nullptr, name);
-          Builder.CreateStore(c64(0), v);
-          ll_st.new_symbol(name, v);
-        }
+          std::cerr << name << std::endl;
+	  yyerror("Compiler bug: Use of unknown variable"); 
+	}
 	else
 		v = ste->v;
         return Builder.CreateLoad(i64, v, name);
@@ -1019,14 +1082,13 @@ class L_value : public Expr {
         ll_ste* ste = ll_st.lookup(name, 0);
         llvm::Value *v;
         if(ste == nullptr) {
-          /* uninitialized ARRAY, initialize to 0s (instead could create error) */
-          std::cerr << "[Warning] Use of uninitialized ARRAY " << name << " (initialized to 0s)" << std::endl;
-          //v = arr_init(name);
-          ll_st.new_symbol(name, v);
+          std::cerr << name << std::endl;
+          yyerror("Compiler bug: Use of uninitialized ARRAY");
         }
         else 
           v = ste->v;
-        return Builder.CreateLoad(i64, v, name);
+	  return nullptr;
+	  // probably gep
       }
       else
         return str_compile();
@@ -1078,7 +1140,7 @@ class Assign : public Stmt {
 			align.end(out);
 		}
 
-		void sem() {
+		void sem() override {
 			bool del_after;
 			Type *t = lv->get_type(del_after);
 			if(t->atd != nullptr)
@@ -1123,7 +1185,7 @@ class Func_call : public Stmt, public Expr {
 			align.end(out);
 		}
 
-		void sem() {
+		void sem() override {
 			stentry *e = st.lookup(id->get_name());
 			if(e->rt == nullptr) {
 				std::cout << *id;
@@ -1140,7 +1202,7 @@ class Func_call : public Stmt, public Expr {
 			e_list->sem();
 			auto it = e_list->item_list.begin();
 			for(auto const &fp : *(e->fpars))
-				for(int i = 0; i < fp.n; ++i) {
+				for(unsigned int i = 0; i < fp.n; ++i) {
 					if(it == e_list->item_list.end())
 						yyerror("Semantic Error: formal parameter missmatch in function call. Less parameters supplied");
 					if(!(*it)->check_comp_with_fpt(fp.fpt)) {
@@ -1184,7 +1246,7 @@ class If : public Stmt {
 			align.end(out);
 		}
 
-		void sem() {
+		void sem() override {
 			c->sem();
 			Then->sem();
 			if(Else != nullptr) Else->sem();
@@ -1247,7 +1309,7 @@ class While : public Stmt {
 			align.end(out);
 		}
 
-		void sem(void* sem) {
+		void sem() override {
 			c->sem();
 			s->sem();
 		}
@@ -1288,7 +1350,7 @@ class Return : public Stmt {
 			align.end(out);
 		}
 
-		void sem() {
+		void sem() override {
 			const Ret_type *rt = st.get_scope_owner_rtype();
 			if(e == nullptr)
 				if(rt->is_nothing())
@@ -1303,7 +1365,19 @@ class Return : public Stmt {
 				return;
 			else
 				yyerror("Semantic Error: Type missmatch in return statement, function has a different return type than that of returned expression");
-	}
+		}
+		
+		llvm::Value* compile() const override {
+			if (e) Builder.CreateRet(e->compile());
+			else   Builder.CreateRetVoid();
+
+			// Because a basic block must end after a ret, we place everything that might come after and would have been in the same block into a block (chain) that will get deleted
+			llvm::Function *TheFunction = Builder.GetInsertBlock()->getParent();
+			llvm::BasicBlock* Dump = llvm::BasicBlock::Create(TheContext, "dump", TheFunction);
+			Builder.SetInsertPoint(Dump);
+			return nullptr;
+		}
+	
 	private:
 		Expr *e;
 };

@@ -60,6 +60,7 @@ Type Char_t(new Data_type(CHAR));
 	const char         *str;
 	const char         *chr;
 	Local_def          *ldef;
+	Func_def           *fdef;
 	Header             *hdr;
 	Local_def_list     *ldlist;
 	Block              *blk;
@@ -80,7 +81,8 @@ Type Char_t(new Data_type(CHAR));
 	char               op;
 }
 
-%type<ldef>   local_def func_def func_decl var_def
+%type<ldef>   local_def func_decl var_def
+%type<fdef>   func_def 
 %type<hdr>    header
 %type<ldlist> local_def_list
 %type<blk>    block stmt_list
@@ -108,9 +110,10 @@ Type Char_t(new Data_type(CHAR));
 
 program:
   func_def {
-  	// std::cout << "AST:\n" << *$1 << std::endl;
-    	$1->sem();
-	$1->llvm_compile_and_dump();
+    // std::cout << "AST:\n" << *$1 << std::endl;
+    $1->sem();
+    $1->set_main();
+    $1->llvm_compile_and_dump();
   }
 ;
 
@@ -171,7 +174,7 @@ fpar_type:
 
 local_def:
   func_def  { $$ = $1; }
-| func_decl	{ $$ = $1; }
+| func_decl { $$ = $1; }
 | var_def   { $$ = $1; }
 ;
 
