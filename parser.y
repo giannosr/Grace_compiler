@@ -17,6 +17,8 @@ const char *CHAR = "char";
 /* Basic Types (usefull in some AST operations) */
 Type Int_t(new Data_type(INT));
 Type Char_t(new Data_type(CHAR));
+
+bool optimization_flag = false;
 %}
 
 %token T_and     "and"
@@ -113,7 +115,7 @@ program:
     // std::cout << "AST:\n" << *$1 << std::endl;
     $1->sem();
     $1->set_main();
-    $1->llvm_compile_and_dump();
+    $1->llvm_compile_and_dump(optimization_flag);
   }
 ;
 
@@ -268,7 +270,8 @@ void yyerror(const char *msg) {
     exit(2);
 }
 
-int main() {
+int main(int argc, char** argv) {
+    if(argc > 1) optimization_flag = true;
     int res = yyparse();
 	if(res == 0) printf("Parsing Success!\n");
 	else         printf("Something went wrong...\n");

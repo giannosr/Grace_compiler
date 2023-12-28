@@ -141,9 +141,6 @@ class AST {
       std::exit(1);
     }
 
-    // Optimize!
-    // TheFPM->run(*main);
-
     // Print out the IR.
     TheModule->print(llvm::outs(), nullptr);
   }
@@ -199,6 +196,8 @@ class Listable : public AST { // this was a really bad idea but it can't be chan
 		virtual bool check_comp_with_fpt(Fpar_type* fpt) const { return 0; } // this is bad. Should I return *nullptr instead?
 		virtual llvm::Value* compile() const override { return nullptr; }
 		virtual void insert_ll_to(std::vector<llvm::Type*>& fpars) const { return; }
+		virtual bool is_var_def()  const { return false; } // for these two it's
+		virtual bool is_func_def() const { return false; } // ok if somebody uses them
 }; // lol these funs are for specific types of listables but the way iterators work means we have to declare them here (all are for semantic analysis btw)
 
 class Item_list : public AST {
@@ -434,12 +433,17 @@ class Var_def : public Local_def {
 		llvm::Value* compile() const override {
 			for(const auto &id : Identifier_list->item_list) {
 				const char* const name = id->get_name();
-				llvm::Type  *t = of_type->get_ll_type();
+				llvm::Type* const t    = of_type->get_ll_type();
+				/*
 				llvm::Value *v = Builder.CreateAlloca(t, nullptr, name);
-				ll_st.new_symbol(name, v);
+				ll_st.new_symbol(name, v, t);
+				- no because we use a stack
+				*/
+				ll_st.new_symbol(name, nullptr, t);
 			}
 			return nullptr;
 		}
+		bool is_var_def() const override { return true; }
 	private:
 		Id_list *Identifier_list;
 		Type *of_type;
@@ -476,9 +480,9 @@ class Fpar_type : public Type {
 			return no_size_array == f.no_size_array && dt == f.dt && atd == f.atd;
 		}
 
-		bool has_unk_size_arr() { return no_size_array; }
-		bool is_array() { return no_size_array || (atd != nullptr); }
-		Type* to_type() {
+		bool has_unk_size_arr() const { return no_size_array; }
+		bool is_array() const { return no_size_array || (atd != nullptr); }
+		Type* to_type() const {
 			if(atd == nullptr)
 				if(no_size_array) return new Type(new Data_type(*dt), new Array_tail_decl(1));
 				else              return new Type(new Data_type(*dt));
@@ -487,7 +491,7 @@ class Fpar_type : public Type {
 				t->atd->sizes.push_front(1); // fuck the rules
 			return t;
 		}
-		bool is_comp_with_t(const Type* const t) {
+		bool is_comp_with_t(const Type* const t) const {
 			if(no_size_array) {
 				Type *p = new Type(*t); // we are gonna modify it so we copy
 				p->drop_first();
@@ -500,7 +504,7 @@ class Fpar_type : public Type {
 	private:
 		bool no_size_array;
 		// other vars are inherited by Type
-		bool private_t_check(const Type* const t) {
+		bool private_t_check(const Type* const t)  const {
 			/* Complex Logic Follows (maybe atd shouldn't have been allowed to be null but instead hold an empty vector) */
 			bool r1 = (*dt == *(t->dt));
 			if(atd != nullptr && t->atd != nullptr)
@@ -537,19 +541,36 @@ class Fpar_def : public Listable {
 		
 		void insert_ll_to(std::vector<llvm::Type*>& fpars) const override { // for header compile
 			// since fpt inherits from t, this is implemented by the Type class
-			// so it ignores the case it has an array of unknown size
-			// that case will be converted to a pointer to the rest of the array type because it is always passed by refrenece (due to semantic analysis)
+			// so it ignores the case it has an array of unknown size which will be handled here
 			llvm::Type *t = fpt->get_ll_type();
-			// if(ref) t = make_pointer(t);
+			if(ref) t = t->getPointerTo(); // llvm::PointerType::get(t, 0); // or t.getPointerTo();
+			if(fpt->has_unk_size_arr()) t = llvm::PointerType::get(t, 0);
 			fpars.insert(fpars.end(), get_idlist_size(), t);
 		}
 		llvm::Value* compile() const override { // for including the fpar in the scope/activation record
+			llvm::Function *TheFunction = Builder.GetInsertBlock()->getParent();
+			llvm::Function::arg_iterator arg = TheFunction->arg_begin();
+			++arg; // because first argument is the frame pointer (frame pointer should only be ommited in main which has no arguments)
 			for(const auto &id : idl->item_list) {
 				const char* const name = id->get_name();
-				llvm::Type  *t = fpt->get_ll_type();
-				// if(ref) t = make_pointer(t);
-				llvm::Value *v = Builder.CreateAlloca(t, nullptr, name);
-				ll_st.new_symbol(name, v);
+				arg->setName(name);
+				llvm::Type  *t = arg->getType();
+				// llvm::Value *v = Builder.CreateAlloca(t, nullptr, name); (- no because we use a stack)
+				llvm::Value *v = c64(42);
+				if(ref) {
+					llvm::Type *base_type = fpt->get_ll_type();
+					// LLVM big dumb here (this is to set the dereferenceable attribute to the arg)
+					arg->addAttr(llvm::Attribute::get(
+						TheContext,
+						llvm::Attribute::Dereferenceable,
+						TheModule->getDataLayout().getTypeAllocSize(base_type)
+					));
+					ll_st.new_symbol(name, v, t, base_type);
+				}
+				else ll_st.new_symbol(name, v, t);
+
+				// Builder.CreateStore(arg, v); (- no because we use a stack)
+				++arg;
 			}
 			return nullptr;
 		}
@@ -626,14 +647,17 @@ class Header : public Func_decl {
 					fpd->sem();
 		}
 
-		llvm::Function* make_ll_fun() const {
+		llvm::Function* make_ll_fun(llvm::Type* frame_pointer_t) const {
 			std::vector<llvm::Type*> ll_fpars;
+			if(frame_pointer_t != nullptr) ll_fpars.push_back(frame_pointer_t);
 			if(params != nullptr)
 				for(const auto &fpd : params->item_list)
 					fpd->insert_ll_to(ll_fpars);
 			llvm::FunctionType *f_type = llvm::FunctionType::get(rtype->get_ll_type(), ll_fpars, false);
-			return llvm::Function::Create(f_type, linkage,
-					name->get_name(), TheModule.get());
+			std::string full_name = ll_st.get_scope_name(".");
+		       	if(full_name == "") full_name = name->get_name();
+			else                full_name += "." + std::string(name->get_name());
+			return llvm::Function::Create(f_type, linkage, full_name, TheModule.get());
 		}
 
 		void set_main() { name->set_main(); linkage = llvm::Function::ExternalLinkage;  }
@@ -641,8 +665,10 @@ class Header : public Func_decl {
 		void push_ll_formal_params() const {
 			if(params != nullptr)
 				for(const auto &fpd : params->item_list)
-					fpd->compile(); // make it similar to Var_decl
+					fpd->compile();
 		}
+		const char* get_name() { return name->get_name(); }
+		bool is_func_def() const override { return true; }
 	private:
 		Id            *name;
 		Fpar_def_list *params;
@@ -655,9 +681,15 @@ class Local_def_list : public Item_list {
 	public:
 		Local_def_list() : Item_list("Local Definition List") {}
 		void sem() override { for(const auto &it : item_list) it->sem(); }
-		llvm::Value* compile() const override {
-			for(const auto &it : item_list) it->compile();
-			return nullptr;
+		void compile_vars() const {
+			for(const auto &it : item_list)
+				if(it->is_var_def())
+					it->compile();
+		}
+		void compile_funcs() const {
+			for(const auto &it : item_list)
+				if(it->is_func_def())
+					it->compile();
 		}
 };
 
@@ -705,22 +737,71 @@ class Func_def : public Local_def {
 		}
 
 		llvm::Value* compile() const override {
-			llvm::Function* f = h->make_ll_fun();
-			llvm::BasicBlock *FunB = llvm::BasicBlock::Create(TheContext, "entry", f);
-			llvm::BasicBlock *Prev = Builder.GetInsertBlock();
+			const ll_ste* const prev_stack_frame = ll_st.lookup("#stack_frame");
+			llvm::Type* const frame_pointer_t = prev_stack_frame != nullptr ?
+				llvm::PointerType::get(prev_stack_frame->t, 0) : nullptr;
+			
+			llvm::Function* const f = h->make_ll_fun(frame_pointer_t);
+			llvm::BasicBlock *Prev  = Builder.GetInsertBlock();
+			llvm::BasicBlock *FunB  = llvm::BasicBlock::Create(TheContext, "entry", f);
+
 			Builder.SetInsertPoint(FunB);
-			ll_st.push_scope();
+			ll_st.push_scope(h->get_name(), f);
 			h->push_ll_formal_params();
-			ldl->compile();
+			ldl->compile_vars();
+
+			generate_stack_frame(frame_pointer_t, f, prev_stack_frame);
+
+			ldl->compile_funcs();
 			b->compile();
 			h->create_default_ret(); // just in case no return statement exists
 			ll_st.pop_scope();
 			Builder.SetInsertPoint(Prev);
+			
+			TheFPM->run(*f);
+
 			return nullptr;
 		}
 
-		void set_main() const { h->set_main(); }
+		void set_main()    const { h->set_main(); }
+		bool is_func_def() const override { return true; }
 	private:
+		struct stack_frame { llvm::Value *v; llvm::Type *t; };
+		void generate_stack_frame(llvm::Type* const frame_pointer_t, llvm::Function* const f, const ll_ste* const prev_stack_frame) const {
+			stack_frame sf;
+			std::vector<llvm::Type*> stack_frame_types;
+			std::vector<std::pair<std::string, ll_ste*> > stack_frame_vars;
+			if(frame_pointer_t != nullptr)
+				stack_frame_types.push_back(frame_pointer_t);
+
+			ll_st.fill_in_stack_frame(stack_frame_vars, stack_frame_types);
+			sf.t = llvm::StructType::create(TheContext, stack_frame_types, std::string(h->get_name()) + "_frame_t");
+			sf.v = Builder.CreateAlloca(sf.t, nullptr, "stack_frame");
+			
+			llvm::Function::arg_iterator arg = f->arg_begin();
+			
+			// set up frame pointer
+			if(frame_pointer_t != nullptr) {
+				arg->setName("frame_pointer");
+				// store frame pointer in the first position of the stack frame
+				llvm::Value *v = Builder.CreateGEP(sf.t, sf.v, {c64(0)}, "frame_pointer_sf_ptr", true);
+				Builder.CreateStore(arg, v);
+				ll_st.new_symbol("#frame_pointer", v, frame_pointer_t, prev_stack_frame->t, 0);
+			}
+
+			// store the rest of the variables
+			for(unsigned long long i = 0; i < stack_frame_vars.size(); ++i) {
+				const std::string name = stack_frame_vars[i].first;
+				llvm::Value *v = Builder.CreateGEP(sf.t, sf.v, {c64(i+1)}, name + "_sf_ptr", true);
+				ll_ste *ste = stack_frame_vars[i].second;
+				if(ste->v != nullptr) // if it's a formal parameter (the value has been set to something to let us know)
+					Builder.CreateStore(++arg, v); // (we need to store the actual value to the stack frame)
+				ll_st.new_symbol(name, v, ste->t, ste->base_type, i+1); // use the sf instead
+			}
+
+			ll_st.new_symbol("#stack_frame", sf.v, sf.t);
+		}
+
 		Header         *h;
 		Local_def_list *ldl;
 		Block          *b;
@@ -992,7 +1073,7 @@ class BinOpCond : public Cond {
       }
       return nullptr;
     }
-          
+
 	private:
 		Expr *l;
 		char op;
@@ -1055,31 +1136,61 @@ class L_value : public Expr {
 			return res;
 		}
 
-    llvm::Value* compile() const override {
-      if(id != nullptr) {
-        const char* const name = id->get_name();
-        ll_ste* ste = ll_st.lookup(name, 0);
-        llvm::Value *v;
-        if(ste == nullptr) {
-          std::cerr << name << std::endl;
-	  yyerror("Compiler bug: Use of unknown variable"); 
-	}
-	else
-		v = ste->v;
-        return Builder.CreateLoad(i64, v, name);
-      }
-      else if(str != nullptr) {
-        return llvm::ConstantDataArray::getString(TheContext, str, true); // gpt
-      }
-      else {
-        return arr_compile();
-      }
-    }
+		llvm::Value* compile() const override {
+			if(id != nullptr) {
+				llvm::Type  *t;
+				llvm::Value *v = this->create_llvm_pointer_to(t);
+				return Builder.CreateLoad(t, v, id->get_name());
+			}
+			else if(str != nullptr) {
+				return llvm::ConstantDataArray::getString(TheContext, str, true); // gpt
+			}
+			else {
+				return arr_compile();
+			}
+		}
+		llvm::Value* create_llvm_pointer_to(llvm::Type* &t) const {
+			const char* const name = id->get_name();
+			const ll_ste* ste = ll_st.lookup(name);
+			if(ste == nullptr) {
+				std::cerr << name << std::endl;
+				yyerror("Compiler bug: Use of unknown variable"); 
+			}
+
+			llvm::Value *v = ste->v;
+			unsigned long long scope = ll_st.get_current_scope_no();
+			// if non local
+			if(scope > ste->scope_no) {
+				const ll_ste *fpe = ll_st.lookup("#frame_pointer", scope);
+				if(fpe == nullptr) yyerror("Compiler Bug: Couldn't find frame pointer");
+				llvm::Value *fpp = fpe->v, *fp, *sf;
+				while(--scope > ste->scope_no) {
+					fp  = Builder.CreateLoad(fpe->t, fpp, "prev_frame_ptr");
+					fpp = Builder.CreateGEP(fpe->base_type, fp, {c64(0)}, "prev_frame_ptr_ptr");
+					fpe = ll_st.lookup("#frame_pointer", scope);
+				}
+
+				fp = Builder.CreateLoad(fpe->t, fpp, "frame_ptr");
+				v  = Builder.CreateGEP(fpe->base_type, fp, {c64(ste->frame_no)}, "non_local_v_ptr", true);
+				ste = ll_st.lookup(name, ste->scope_no);
+				// ste is now the ste of that variable (the non local one)
+			}
+
+			// if passed by reference
+			if(ste->base_type != nullptr) {
+				t = ste->base_type;
+				return Builder.CreateLoad(ste->t, v, "ref");
+			}
+
+			// else passed by value
+			t = ste->t;
+			return v;
+		}
 
     llvm::Value* arr_compile(/* std::vector<llvm::Value*> &indicies */) const {
       const char* const name = get_arr_name();
       if(name != nullptr) {
-        ll_ste* ste = ll_st.lookup(name, 0);
+        const ll_ste* ste = ll_st.lookup(name);
         llvm::Value *v;
         if(ste == nullptr) {
           std::cerr << name << std::endl;
@@ -1152,19 +1263,12 @@ class Assign : public Stmt {
 			if(del_after) delete t;
 		}
 
-    llvm::Value* compile() const override {
-      const char* const name = lv->get_name();
-      ll_ste* ste = ll_st.lookup(name, 1);
-      llvm::Value *v;
-      if(ste == nullptr) {
-        v = Builder.CreateAlloca(i64, nullptr, name); // gpt
-        ll_st.new_symbol(name, v);
-      }
-      else
-	      v = ste->v;
-      Builder.CreateStore(e->compile(), v);
-      return nullptr;
-    }
+		llvm::Value* compile() const override {
+			llvm::Type  *t;
+			llvm::Value *v = lv->create_llvm_pointer_to(t);
+			Builder.CreateStore(e->compile(), v);
+			return nullptr;
+		}
 	private:
 		L_value *lv;
 		Expr    *e;
@@ -1371,7 +1475,8 @@ class Return : public Stmt {
 			if (e) Builder.CreateRet(e->compile());
 			else   Builder.CreateRetVoid();
 
-			// Because a basic block must end after a ret, we place everything that might come after and would have been in the same block into a block (chain) that will get deleted
+			// Because a basic block must end after a ret, we place everything that might come after
+			// and would have been in the same block into a block (chain) that will get deleted
 			llvm::Function *TheFunction = Builder.GetInsertBlock()->getParent();
 			llvm::BasicBlock* Dump = llvm::BasicBlock::Create(TheContext, "dump", TheFunction);
 			Builder.SetInsertPoint(Dump);
