@@ -198,6 +198,7 @@ class Listable : public AST { // this was a really bad idea but it can't be chan
 		virtual void insert_ll_to(std::vector<llvm::Type*>& fpars) const { return; }
 		virtual bool is_var_def()  const { return false; } // for these two it's
 		virtual bool is_func_def() const { return false; } // ok if somebody uses them
+		virtual llvm::Value* create_llvm_pointer_to(llvm::Type* &t) const { return nullptr; }; //should only be called by l_value
 }; // lol these funs are for specific types of listables but the way iterators work means we have to declare them here (all are for semantic analysis btw)
 
 class Item_list : public AST {
@@ -477,7 +478,7 @@ class Fpar_type : public Type {
 		}
 
 		bool operator==(const Fpar_type &f) const {
-			return no_size_array == f.no_size_array && dt == f.dt && atd == f.atd;
+			return no_size_array == f.no_size_array && *dt == *(f.dt) && atd == f.atd;
 		}
 
 		bool has_unk_size_arr() const { return no_size_array; }
@@ -647,6 +648,16 @@ class Header : public Func_decl {
 					fpd->sem();
 		}
 
+		llvm::Value* compile() const override { // for function declaration
+			const ll_ste* const prev_stack_frame = ll_st.lookup("#stack_frame");
+			llvm::Type* const frame_pointer_t = prev_stack_frame != nullptr ?
+				llvm::PointerType::get(prev_stack_frame->t, 0) : nullptr;
+			
+			llvm::Function* f = make_ll_fun(frame_pointer_t);
+			ll_st.new_func(get_name(), f);
+			return f;
+		}
+
 		llvm::Function* make_ll_fun(llvm::Type* frame_pointer_t) const {
 			std::vector<llvm::Type*> ll_fpars;
 			if(frame_pointer_t != nullptr) ll_fpars.push_back(frame_pointer_t);
@@ -667,7 +678,7 @@ class Header : public Func_decl {
 				for(const auto &fpd : params->item_list)
 					fpd->compile();
 		}
-		const char* get_name() { return name->get_name(); }
+		const char* get_name() const      { return name->get_name(); }
 		bool is_func_def() const override { return true; }
 	private:
 		Id            *name;
@@ -741,12 +752,15 @@ class Func_def : public Local_def {
 			llvm::Type* const frame_pointer_t = prev_stack_frame != nullptr ?
 				llvm::PointerType::get(prev_stack_frame->t, 0) : nullptr;
 			
-			llvm::Function* const f = h->make_ll_fun(frame_pointer_t);
+			llvm::Function* f;
+			const ll_ste *ste = ll_st.lookup(h->get_name());
+			if(ste != nullptr) f = ste->f; // f was already decleared
+			else               f = h->make_ll_fun(frame_pointer_t);
 			llvm::BasicBlock *Prev  = Builder.GetInsertBlock();
 			llvm::BasicBlock *FunB  = llvm::BasicBlock::Create(TheContext, "entry", f);
 
 			Builder.SetInsertPoint(FunB);
-			ll_st.push_scope(h->get_name(), f);
+			ll_st.push_scope(h->get_name());
 			h->push_ll_formal_params();
 			ldl->compile_vars();
 
@@ -759,11 +773,17 @@ class Func_def : public Local_def {
 			Builder.SetInsertPoint(Prev);
 			
 			TheFPM->run(*f);
-
+			
+			// register the new function so it can be called by others in the scope
+			ll_st.new_func(h->get_name(), f);
 			return nullptr;
 		}
 
-		void set_main()    const { h->set_main(); }
+		void set_main() const {
+			h->set_main();
+			ll_st.push_scope("#runtime_lib_scope");
+			// also push runtime libarary functions in this scope
+		}
 		bool is_func_def() const override { return true; }
 	private:
 		struct stack_frame { llvm::Value *v; llvm::Type *t; };
@@ -773,6 +793,8 @@ class Func_def : public Local_def {
 			std::vector<std::pair<std::string, ll_ste*> > stack_frame_vars;
 			if(frame_pointer_t != nullptr)
 				stack_frame_types.push_back(frame_pointer_t);
+			else // only for main (so that there are no problems bc rest of the code assumes the 0th position in the frame is a frame pointer)
+				stack_frame_types.push_back(llvm::PointerType::get(i64, 0));
 
 			ll_st.fill_in_stack_frame(stack_frame_vars, stack_frame_types);
 			sf.t = llvm::StructType::create(TheContext, stack_frame_types, std::string(h->get_name()) + "_frame_t");
@@ -784,7 +806,7 @@ class Func_def : public Local_def {
 			if(frame_pointer_t != nullptr) {
 				arg->setName("frame_pointer");
 				// store frame pointer in the first position of the stack frame
-				llvm::Value *v = Builder.CreateGEP(sf.t, sf.v, {c64(0)}, "frame_pointer_sf_ptr", true);
+				llvm::Value *v = Builder.CreateGEP(frame_pointer_t, sf.v, {c64(0)}, "frame_pointer_sf_ptr", true);
 				Builder.CreateStore(arg, v);
 				ll_st.new_symbol("#frame_pointer", v, frame_pointer_t, prev_stack_frame->t, 0);
 			}
@@ -792,8 +814,8 @@ class Func_def : public Local_def {
 			// store the rest of the variables
 			for(unsigned long long i = 0; i < stack_frame_vars.size(); ++i) {
 				const std::string name = stack_frame_vars[i].first;
-				llvm::Value *v = Builder.CreateGEP(sf.t, sf.v, {c64(i+1)}, name + "_sf_ptr", true);
 				ll_ste *ste = stack_frame_vars[i].second;
+				llvm::Value *v = Builder.CreateGEP(ste->t, sf.v, {c64(i+1)}, name + "_sf_ptr", true);
 				if(ste->v != nullptr) // if it's a formal parameter (the value has been set to something to let us know)
 					Builder.CreateStore(++arg, v); // (we need to store the actual value to the stack frame)
 				ll_st.new_symbol(name, v, ste->t, ste->base_type, i+1); // use the sf instead
@@ -966,6 +988,9 @@ class Expr_list : public Item_list {
 		}
 
 		void sem() override { for(auto const &expr : item_list) expr->sem(); }
+		void compile_exprs(std::vector<llvm::Value*> &v) const {
+			for(auto const &expr : item_list) v.push_back(expr->compile());
+		}
 };
 
 class Cond : public AST {
@@ -1149,7 +1174,7 @@ class L_value : public Expr {
 				return arr_compile();
 			}
 		}
-		llvm::Value* create_llvm_pointer_to(llvm::Type* &t) const {
+		llvm::Value* create_llvm_pointer_to(llvm::Type* &t) const override {
 			const char* const name = id->get_name();
 			const ll_ste* ste = ll_st.lookup(name);
 			if(ste == nullptr) {
@@ -1163,17 +1188,19 @@ class L_value : public Expr {
 			if(scope > ste->scope_no) {
 				const ll_ste *fpe = ll_st.lookup("#frame_pointer", scope);
 				if(fpe == nullptr) yyerror("Compiler Bug: Couldn't find frame pointer");
-				llvm::Value *fpp = fpe->v, *fp, *sf;
+				llvm::Value *fpp = fpe->v, *fp;
 				while(--scope > ste->scope_no) {
 					fp  = Builder.CreateLoad(fpe->t, fpp, "prev_frame_ptr");
 					fpp = Builder.CreateGEP(fpe->base_type, fp, {c64(0)}, "prev_frame_ptr_ptr");
 					fpe = ll_st.lookup("#frame_pointer", scope);
 				}
 
-				fp = Builder.CreateLoad(fpe->t, fpp, "frame_ptr");
-				v  = Builder.CreateGEP(fpe->base_type, fp, {c64(ste->frame_no)}, "non_local_v_ptr", true);
-				ste = ll_st.lookup(name, ste->scope_no);
+				fp  = Builder.CreateLoad(fpe->t, fpp, "frame_ptr");
+				unsigned long long frame_no = ste->frame_no;
+				ste = ll_st.lookup(name, ste->scope_no); // (scope_no is actually not needed here but we avoid searching all previous scopes again)
 				// ste is now the ste of that variable (the non local one)
+				
+				v = Builder.CreateGEP(ste->t, fp, {c64(frame_no)}, "non_local_v_ptr", true);
 			}
 
 			// if passed by reference
@@ -1326,6 +1353,25 @@ class Func_call : public Stmt, public Expr {
 		
 		bool check_comp_with_fpt(Fpar_type* fpt) const override {
 			return st.lookup(id->get_name())->rt->check_comp_with_fpt(fpt);
+		}
+
+		llvm::Value* compile() const override {
+			const ll_ste* ste = ll_st.lookup(id->get_name());
+			if(ste == nullptr) yyerror("Compiler Bug: call to non existing function");
+			std::vector<llvm::Value*> args;
+			args.push_back(ll_st.lookup("#stack_frame")->v);
+			if(e_list != nullptr) e_list->compile_exprs(args);
+			llvm::Function::arg_iterator arg = ste->f->arg_begin();
+			unsigned long long i = 0;
+			// FIX: REQUIRES TESTING
+			while(++arg != ste->f->arg_end()) { // because first argument is the frame pointer
+				++i;
+				if(arg->getType()->isPointerTy() && !args[i]->getType()->isPointerTy()) { // if ref but not already passed by ref
+					llvm::Type *t;
+					args[i] = e_list->item_list[i - 1]->create_llvm_pointer_to(t);
+				}
+			}
+			return Builder.CreateCall(ste->f, args);
 		}
 	private:
 		Id        *id;

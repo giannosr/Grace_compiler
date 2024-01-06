@@ -8,25 +8,36 @@
 #include <llvm/IR/Value.h>
 
 struct ll_ste {
-  ll_ste(llvm::Value* const val, llvm::Type* type, llvm::Type* const base, const unsigned long long in_frame_number, const unsigned long long scope_number) : v(val), t(type), base_type(base), frame_no(in_frame_number), scope_no(scope_number) {}
-  llvm::Value *v;
-  llvm::Type  *t;
-  llvm::Type  *base_type;
+  ll_ste(
+    llvm::Value* const val,
+    llvm::Type* type,
+    llvm::Type* const base,
+    const unsigned long long in_frame_number,
+    const unsigned long long scope_number,
+    llvm::Function* const func
+  ) : t(type), base_type(base), frame_no(in_frame_number), scope_no(scope_number) {
+    if(val != nullptr) v = val; else f = func;
+  }
+  union {
+    llvm::Value    *v;
+    llvm::Function *f;
+  };
+  llvm::Type *t;
+  llvm::Type *base_type;
   unsigned long long frame_no, scope_no;
 };
 
 struct ll_scope {
-  ll_scope(const char* const f_name, llvm::Function* const fun) : vars(), func_name(f_name), f(fun) {}
+  ll_scope(const char* const f_name) : vars(), func_name(f_name) {}
   std::map<std::string, ll_ste*> vars;
   const char* const func_name;
-  llvm::Function* const f;
 };
 
 class ll_symbol_table {
  public:
   ll_symbol_table() : scopes() {}
-  void push_scope(const char* const func_name, llvm::Function* const f) {
-    scopes.push_back(new ll_scope(func_name, f));
+  void push_scope(const char* const func_name) {
+    scopes.push_back(new ll_scope(func_name));
   }
   void pop_scope() {
     for(const auto &s : scopes.back()->vars) delete s.second;
@@ -34,7 +45,10 @@ class ll_symbol_table {
     scopes.pop_back();
   }
   void new_symbol(const std::string name, llvm::Value* const v, llvm::Type* const t, llvm::Type* base_type=nullptr, const unsigned long long frame_no=-1) {
-    scopes.back()->vars[name] = new ll_ste(v, t, base_type, frame_no, scopes.size());
+    scopes.back()->vars[name] = new ll_ste(v, t, base_type, frame_no, scopes.size(), nullptr);
+  }
+  void new_func(const std::string name, llvm::Function* const f) {
+    scopes.back()->vars[name] = new ll_ste(nullptr, nullptr, nullptr, -1, -1, f);
   }
   const ll_ste* lookup(const std::string name) const {
     for(auto s = scopes.rbegin(); s != scopes.rend(); ++s) {
@@ -46,12 +60,13 @@ class ll_symbol_table {
   const ll_ste* lookup(const std::string name, const unsigned long long scope) const {
     return scopes[scope - 1]->vars.find(name)->second;
   }
-  std::string get_scope_name(const std::string& sep) const {
-    if(scopes.empty()) return std::string("");
-    auto s = scopes.begin();
-    std::string s_name = std::string((**s).func_name);
-    while(++s != scopes.end()) s_name += sep + std::string((**s).func_name);
-    return s_name;
+  std::string get_scope_name(const std::string &sep) const {
+    std::string s_name = "";
+    for(const auto &s : scopes)
+      if(s->func_name != nullptr && s->func_name[0] != '#')
+        if(s_name.size() == 0) s_name = std::string(s->func_name); 
+        else                   s_name += sep + std::string(s->func_name);
+    return s_name; 
   }
   void fill_in_stack_frame(std::vector<std::pair<std::string, ll_ste*> > &vars, std::vector<llvm::Type*> &types) const {
     // unsigned long long i = 0;
