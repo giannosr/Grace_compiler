@@ -799,6 +799,19 @@ class Func_def : public Local_def {
 			ll_st.fill_in_stack_frame(stack_frame_vars, stack_frame_types);
 			sf.t = llvm::StructType::create(TheContext, stack_frame_types, std::string(h->get_name()) + "_frame_t");
 			sf.v = Builder.CreateAlloca(sf.t, nullptr, "stack_frame");
+			/* for some reason the following decreases the size of arrays that can be decleared without segfault (sometimes it's also random)
+			if(frame_pointer_t != nullptr)
+				sf.v = Builder.CreateAlloca(sf.t, nullptr, "stack_frame");
+			else {
+				llvm::GlobalVariable *msf = new llvm::GlobalVariable(
+					*TheModule, sf.t, false, llvm::GlobalValue::PrivateLinkage,
+					llvm::ConstantAggregateZero::get(sf.t), "mains_stack_frame"
+				);
+				msf->setAlignment(llvm::MaybeAlign(8));
+				sf.v = msf; // make mains stack frame global so it's on the heap and large arrays can be used
+					    // could also do this for all non recursive functions
+			}
+			*/
 			
 			llvm::Function::arg_iterator arg = f->arg_begin();
 			
@@ -1135,7 +1148,7 @@ class L_value : public Expr {
 				}
 				return ste->t;
 			}
-			if(str != nullptr) { del_after = true; return new Str_type(strlen(str)); } // to prevent memory leak
+			if(str != nullptr) { del_after = true; return new Str_type(strlen(str) - 1); } // to prevent memory leak // len of str is - 2 beacause of "" + 1 because of \0
 			if(!e->check_type(&Int_t))
 				yyerror("Semantic Error: Access Expression must be of type int");
 			Type *p = lv->get_type(del_after);
@@ -1162,92 +1175,100 @@ class L_value : public Expr {
 		}
 
 		llvm::Value* compile() const override {
-			if(id != nullptr) {
-				llvm::Type  *t;
-				llvm::Value *v = this->create_llvm_pointer_to(t);
-				return Builder.CreateLoad(t, v, id->get_name());
+			if(str != nullptr) {
+				std::string s = "";
+				parse_str(str, s);
+				return llvm::ConstantDataArray::getString(TheContext, s, true);
 			}
-			else if(str != nullptr) {
-				return llvm::ConstantDataArray::getString(TheContext, str, true); // gpt
-			}
-			else {
-				return arr_compile();
-			}
+			llvm::Type  *t;
+			llvm::Value *v = this->create_llvm_pointer_to(t);
+			if(id != nullptr) return Builder.CreateLoad(t, v, id->get_name());
+			else              return Builder.CreateLoad(t, v, "array_elem_val");
 		}
 		llvm::Value* create_llvm_pointer_to(llvm::Type* &t) const override {
-			const char* const name = id->get_name();
-			const ll_ste* ste = ll_st.lookup(name);
-			if(ste == nullptr) {
-				std::cerr << name << std::endl;
-				yyerror("Compiler bug: Use of unknown variable"); 
-			}
-
-			llvm::Value *v = ste->v;
-			unsigned long long scope = ll_st.get_current_scope_no();
-			// if non local
-			if(scope > ste->scope_no) {
-				const ll_ste *fpe = ll_st.lookup("#frame_pointer", scope);
-				if(fpe == nullptr) yyerror("Compiler Bug: Couldn't find frame pointer");
-				llvm::Value *fpp = fpe->v, *fp;
-				while(--scope > ste->scope_no) {
-					fp  = Builder.CreateLoad(fpe->t, fpp, "prev_frame_ptr");
-					fpp = Builder.CreateGEP(fpe->base_type, fp, {c64(0)}, "prev_frame_ptr_ptr");
-					fpe = ll_st.lookup("#frame_pointer", scope);
+			if(id != nullptr) {
+				const char* const name = id->get_name();
+				const ll_ste* ste = ll_st.lookup(name);
+				if(ste == nullptr) {
+					std::cerr << name << std::endl;
+					yyerror("Compiler bug: Use of unknown variable"); 
 				}
 
-				fp  = Builder.CreateLoad(fpe->t, fpp, "frame_ptr");
-				unsigned long long frame_no = ste->frame_no;
-				ste = ll_st.lookup(name, ste->scope_no); // (scope_no is actually not needed here but we avoid searching all previous scopes again)
-				// ste is now the ste of that variable (the non local one)
-				
-				v = Builder.CreateGEP(ste->t, fp, {c64(frame_no)}, "non_local_v_ptr", true);
-			}
+				llvm::Value *v = ste->v;
+				unsigned long long scope = ll_st.get_current_scope_no();
+				if(scope > ste->scope_no) { // if non local
+					const ll_ste *fpe = ll_st.lookup("#frame_pointer", scope);
+					if(fpe == nullptr) yyerror("Compiler Bug: Couldn't find frame pointer");
+					llvm::Value *fpp = fpe->v, *fp;
+					while(--scope > ste->scope_no) {
+						fp  = Builder.CreateLoad(fpe->t, fpp, "prev_frame_ptr");
+						fpp = Builder.CreateGEP(fpe->base_type, fp, {c64(0)}, "prev_frame_ptr_ptr");
+						fpe = ll_st.lookup("#frame_pointer", scope);
+					}
 
-			// if passed by reference
-			if(ste->base_type != nullptr) {
-				t = ste->base_type;
-				return Builder.CreateLoad(ste->t, v, "ref");
-			}
+					fp  = Builder.CreateLoad(fpe->t, fpp, "frame_ptr");
+					unsigned long long frame_no = ste->frame_no;
+					ste = ll_st.lookup(name, ste->scope_no); // (scope_no is actually not needed here but we avoid searching all previous scopes again)
+					// ste is now the ste of that variable (the non local one)
+					
+					v = Builder.CreateGEP(ste->t, fp, {c64(frame_no)}, "non_local_v_ptr", true);
+				}
 
-			// else passed by value
-			t = ste->t;
-			return v;
+				if(ste->base_type != nullptr) { // if passed by reference
+					t = ste->base_type;
+					return Builder.CreateLoad(ste->t, v, "ref");
+				}
+
+				// else passed by value
+				t = ste->t;
+				return v;
+			}
+			else if(str != nullptr) {
+				std::string s = "";
+				unsigned long long len = parse_str(str, s);
+				llvm::Value *p = Builder.CreateAlloca(i8, c64(len +1) , "str_ptr");
+				llvm::Constant *v = llvm::ConstantDataArray::getString(TheContext, s, true);
+				Builder.CreateStore(v, p);
+				t = v->getType();
+				return p;
+			}
+			else { // array
+				llvm::Value *arr = lv->create_llvm_pointer_to(t), *ev = e->compile();
+				if(t->isArrayTy()) t = t->getArrayElementType();
+				return Builder.CreateGEP(t, arr, { ev }, "arr_elem_ptr", true);
+			}
+		}
+		static unsigned long long parse_str(const char* const str, std::string &s) {
+			unsigned long long i = 0;
+			while(str[++i] != '\0') { // str[0] is "
+				switch (str[i]) {
+					case '\"': break;
+					case '\\':
+						switch (str[++i]) {
+							case 'n':  s += '\n'; break;
+							case 't':  s += '\t'; break;
+							case 'r':  s += '\r'; break;
+							case '0':  s += '\0'; break;
+							case '\\': s += '\\'; break;
+							case '\'': s += '\''; break;
+							case '\"': s += '\"'; break;
+							case 'x':
+								char x1 = str[++i], x2 = str[++i];
+								s += hex(x1)*16 + hex(x2);
+						}
+						break;
+					default: s += str[i];
+				}
+			}
+			return i;
+		}
+		static int hex(const char x) {
+			if('0' <= x && x <= '9') return x - '0';
+			if('a' <= x && x <= 'f') return 10 + x - 'a';
+			if('A' <= x && x <= 'F') return 10 + x - 'A';
+			return 0; // maybe also print error?
 		}
 
-    llvm::Value* arr_compile(/* std::vector<llvm::Value*> &indicies */) const {
-      const char* const name = get_arr_name();
-      if(name != nullptr) {
-        const ll_ste* ste = ll_st.lookup(name);
-        llvm::Value *v;
-        if(ste == nullptr) {
-          std::cerr << name << std::endl;
-          yyerror("Compiler bug: Use of uninitialized ARRAY");
-        }
-        else 
-          v = ste->v;
-	  return nullptr;
-	  // probably gep
-      }
-      else
-        return str_compile();
-    }
-
-	llvm::Value* str_compile() const {
-		if(str != nullptr) return llvm::ConstantDataArray::getString(TheContext, str, true); // gpt
-		// else probably gep(lv->str_compile());
-	}
-
-    const char* get_name() const {
-      if(id == nullptr)
-        std::cerr << "Compiler Bug: you are getting name of non identifier lvalue" << std::endl;
-      return id->get_name();
-    }
-
-	const char* get_arr_name() const {
-		if(id != nullptr)  return id->get_name();
-		if(str != nullptr) return nullptr;
-		return lv->get_arr_name();
-	}
 	private:
 		Id         *id;
 		const char *str;
