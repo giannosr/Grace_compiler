@@ -85,88 +85,175 @@ class AST {
 		virtual void print(std::ostream &out) const = 0;
 		virtual llvm::Value* compile() const {return nullptr; }
 
-    void llvm_compile_and_dump(bool optimize=true) {
-    // Initialize
-    TheModule = std::make_unique<llvm::Module>("grace program", TheContext);
-      // add more opts
-    TheFPM = std::make_unique<llvm::legacy::FunctionPassManager>(TheModule.get());
-    if (optimize) {
-      TheFPM->add(llvm::createPromoteMemoryToRegisterPass());
-      TheFPM->add(llvm::createInstructionCombiningPass());
-      TheFPM->add(llvm::createReassociatePass());
-      TheFPM->add(llvm::createGVNPass());
-      TheFPM->add(llvm::createCFGSimplificationPass());
-    }
-    TheFPM->doInitialization();
-    // Initialize types
-    i8  = llvm::IntegerType::get(TheContext, 8);
-    i64 = llvm::IntegerType::get(TheContext, 64);
- 
-  /*
-    // Initialize global variables
-    ArrayType *vars_type = ArrayType::get(i32, 26);
-    TheVars = new GlobalVariable(
-      *TheModule, vars_type, false, GlobalValue::PrivateLinkage,
-      ConstantAggregateZero::get(vars_type), "vars");
-    TheVars->setAlignment(MaybeAlign(16));
-    */
-    llvm::ArrayType *nl_type = llvm::ArrayType::get(i8, 2);
-    TheNL = new llvm::GlobalVariable(
-      *TheModule, nl_type, true, llvm::GlobalValue::PrivateLinkage,
-      llvm::ConstantArray::get(nl_type, {c8('\n'), c8('\0')}), "nl");
-    TheNL->setAlignment(llvm::MaybeAlign(1));
-/*
-    // Initialize library functions
-    FunctionType *writeInteger_type =
-      FunctionType::get(Type::getVoidTy(TheContext), {i64}, false);
-    TheWriteInteger =
-      Function::Create(writeInteger_type, Function::ExternalLinkage,
-                       "writeInteger", TheModule.get());
-    FunctionType *writeString_type =
-      FunctionType::get(Type::getVoidTy(TheContext),
-                        {PointerType::get(i8, 0)}, false);
-    TheWriteString =
-      Function::Create(writeString_type, Function::ExternalLinkage,
-                       "writeString", TheModule.get());
+		void llvm_compile_and_dump(bool optimize=true) {
+			// Initialize
+			TheModule = std::make_unique<llvm::Module>("grace program", TheContext);
+			// add more opts
+			TheFPM = std::make_unique<llvm::legacy::FunctionPassManager>(TheModule.get());
+			if (optimize) {
+				TheFPM->add(llvm::createPromoteMemoryToRegisterPass());
+				TheFPM->add(llvm::createInstructionCombiningPass());
+				TheFPM->add(llvm::createReassociatePass());
+				TheFPM->add(llvm::createGVNPass());
+				TheFPM->add(llvm::createCFGSimplificationPass());
+			}
+			TheFPM->doInitialization();
+			// Initialize types
+			i8  = llvm::IntegerType::get(TheContext, 8);
+			i64 = llvm::IntegerType::get(TheContext, 64);
 
-*/
-    // Emit the program code.
-    compile();
+			// Initialize library functions
+			init_lib();
 
-    // Verify the IR.
-    bool bad = verifyModule(*TheModule, &llvm::errs());
-    if (bad) {
-      std::cerr << "The IR is bad!" << std::endl;
-      TheModule->print(llvm::errs(), nullptr);
-      std::exit(1);
-    }
+			// Emit the program code.
+			compile();
 
-    // Print out the IR.
-    TheModule->print(llvm::outs(), nullptr);
-  }
+			// Verify the IR.
+			bool bad = verifyModule(*TheModule, &llvm::errs());
+			if (bad) {
+				std::cerr << "The IR is bad!" << std::endl;
+				TheModule->print(llvm::errs(), nullptr);
+				std::exit(1);
+			}
 
- protected:
-  static llvm::LLVMContext TheContext;
-  static llvm::IRBuilder<> Builder;
-  static std::unique_ptr<llvm::Module> TheModule;
-  static std::unique_ptr<llvm::legacy::FunctionPassManager> TheFPM;
+			// Print out the IR.
+			TheModule->print(llvm::outs(), nullptr);
+		}
 
-  // static GlobalVariable *TheVars;
-  static llvm::GlobalVariable *TheNL;
-/*
-  static Function *TheWriteInteger;
-  static Function *TheWriteString;
-*/
+	protected:
+		static llvm::LLVMContext TheContext;
+		static llvm::IRBuilder<> Builder;
+		static std::unique_ptr<llvm::Module> TheModule;
+		static std::unique_ptr<llvm::legacy::FunctionPassManager> TheFPM;
 
-  static llvm::Type *i8;
-  static llvm::Type *i64;
+		static llvm::Type *i8;
+		static llvm::Type *i64;
 
-  static llvm::ConstantInt* c8(char c) {
-    return llvm::ConstantInt::get(TheContext, llvm::APInt(8, c, true));
-  }
-  static llvm::ConstantInt* c64(int n) {
-    return llvm::ConstantInt::get(TheContext, llvm::APInt(64, n, true));
-  }
+		static llvm::ConstantInt* c8(char c) {
+			return llvm::ConstantInt::get(TheContext, llvm::APInt(8, c, true));
+		}
+		static llvm::ConstantInt* c64(int n) {
+			return llvm::ConstantInt::get(TheContext, llvm::APInt(64, n, true));
+		}
+		
+		void init_lib() const {
+			ll_st.push_scope("#runtime_lib_scope");
+			
+			llvm::Type *str_ref = llvm::PointerType::get(i8, 0),
+			           *nothing = llvm::Type::getVoidTy(TheContext);
+
+			// Initialize library functions
+			// 1. IO
+			llvm::FunctionType *writeInteger_type = llvm::FunctionType::get(
+				nothing, {i64}, false
+			);
+			llvm::Function *TheWriteInteger = llvm::Function::Create(
+				writeInteger_type, llvm::Function::ExternalLinkage,
+				"writeInteger", TheModule.get()
+			);
+			ll_st.new_func("writeInteger", TheWriteInteger, true);
+
+			llvm::FunctionType *writeChar_type = llvm::FunctionType::get(
+				nothing, {i8}, false
+			);
+			llvm::Function *TheWriteChar = llvm::Function::Create(
+				writeChar_type, llvm::Function::ExternalLinkage,
+				"writeChar", TheModule.get()
+			);
+			ll_st.new_func("writeChar", TheWriteChar, true);
+
+			llvm::FunctionType *writeString_type = llvm::FunctionType::get(
+				nothing, {str_ref}, false
+			);
+			llvm::Function *TheWriteString = llvm::Function::Create(
+				writeString_type, llvm::Function::ExternalLinkage,
+				"writeString", TheModule.get()
+			);
+			ll_st.new_func("writeString", TheWriteString, true);
+
+			llvm::FunctionType *readInteger_type = llvm::FunctionType::get(
+				i64, {}, false
+			);
+			llvm::Function *TheReadInteger = llvm::Function::Create(
+				readInteger_type, llvm::Function::ExternalLinkage,
+				"readInteger", TheModule.get()
+			);
+			ll_st.new_func("readInteger", TheReadInteger, true);
+
+			llvm::FunctionType *readChar_type = llvm::FunctionType::get(
+				i8, {}, false
+			);
+			llvm::Function *TheReadChar = llvm::Function::Create(
+				readChar_type, llvm::Function::ExternalLinkage,
+				"readChar", TheModule.get()
+			);
+			ll_st.new_func("readChar", TheReadChar, true);
+
+			llvm::FunctionType *readString_type = llvm::FunctionType::get(
+				nothing, {i64, str_ref}, false
+			);
+			llvm::Function *TheReadString = llvm::Function::Create(
+				readString_type, llvm::Function::ExternalLinkage,
+				"readString", TheModule.get()
+			);
+			ll_st.new_func("readString", TheReadString, true);
+
+			// 2. Conversion Functions
+			llvm::FunctionType *ascii_type = llvm::FunctionType::get(
+				i64, {i8}, false
+			);
+			llvm::Function *TheAscii = llvm::Function::Create(
+				ascii_type, llvm::Function::ExternalLinkage,
+				"ascii", TheModule.get()
+			);
+			ll_st.new_func("ascii", TheAscii, true);
+
+			llvm::FunctionType *chr_type = llvm::FunctionType::get(
+				i8, {i64}, false
+			);
+			llvm::Function *TheChr = llvm::Function::Create(
+				chr_type, llvm::Function::ExternalLinkage,
+				"chr", TheModule.get()
+			);
+			ll_st.new_func("chr", TheChr, true);
+
+			// 3. String Management
+			llvm::FunctionType *strlen_type = llvm::FunctionType::get(
+				i64, {str_ref}, false
+			);
+			llvm::Function *TheStrlen = llvm::Function::Create(
+				strlen_type, llvm::Function::ExternalLinkage,
+				"strlen", TheModule.get()
+			);
+			ll_st.new_func("strlen", TheStrlen, true);
+
+			llvm::FunctionType *strcmp_type = llvm::FunctionType::get(
+				i64, {str_ref, str_ref}, false
+			);
+			llvm::Function *TheStrcmp = llvm::Function::Create(
+				strcmp_type, llvm::Function::ExternalLinkage,
+				"strcmp", TheModule.get()
+			);
+			ll_st.new_func("strcmp", TheStrcmp, true);
+
+			llvm::FunctionType *strcpy_type = llvm::FunctionType::get(
+				nothing, {str_ref, str_ref}, false
+			);
+			llvm::Function *TheStrcpy = llvm::Function::Create(
+				strcpy_type, llvm::Function::ExternalLinkage,
+				"strcpy", TheModule.get()
+			);
+			ll_st.new_func("strcpy", TheStrcpy, true);
+
+			llvm::FunctionType *strcat_type = llvm::FunctionType::get(
+				nothing, {str_ref, str_ref}, false
+			);
+			llvm::Function *TheStrcat = llvm::Function::Create(
+				strcat_type, llvm::Function::ExternalLinkage,
+				"strcat", TheModule.get()
+			);
+			ll_st.new_func("strcat", TheStrcat, true);
+		}
 };
 
 inline std::ostream &operator<<(std::ostream &out, const AST &ast) {
@@ -195,7 +282,8 @@ class Listable : public AST { // this was a really bad idea but it can't be chan
 		virtual Fpar_type* get_fpt() const { return 0; }
 		virtual bool check_comp_with_fpt(Fpar_type* fpt) const { return 0; } // this is bad. Should I return *nullptr instead?
 		virtual llvm::Value* compile() const override { return nullptr; }
-		virtual void insert_ll_to(std::vector<llvm::Type*>& fpars) const { return; }
+		virtual void insert_ll_type_to(std::vector<llvm::Type*>& fpars) const { return; }
+		virtual void make_args(llvm::Function::arg_iterator &arg) const {}
 		virtual bool is_var_def()  const { return false; } // for these two it's
 		virtual bool is_func_def() const { return false; } // ok if somebody uses them
 		virtual llvm::Value* create_llvm_pointer_to(llvm::Type* &t) const { return nullptr; }; //should only be called by l_value
@@ -540,7 +628,7 @@ class Fpar_def : public Listable {
 		unsigned long long get_idlist_size() const override { return idl->item_list.size(); }
 		Fpar_type* get_fpt() const override { return fpt; }
 		
-		void insert_ll_to(std::vector<llvm::Type*>& fpars) const override { // for header compile
+		void insert_ll_type_to(std::vector<llvm::Type*>& fpars) const override { // for header compile
 			// since fpt inherits from t, this is implemented by the Type class
 			// so it ignores the case it has an array of unknown size which will be handled here
 			llvm::Type *t = fpt->get_ll_type();
@@ -548,14 +636,11 @@ class Fpar_def : public Listable {
 			if(fpt->has_unk_size_arr()) t = llvm::PointerType::get(t, 0);
 			fpars.insert(fpars.end(), get_idlist_size(), t);
 		}
-		llvm::Value* compile() const override { // for including the fpar in the scope/activation record
-			llvm::Function *TheFunction = Builder.GetInsertBlock()->getParent();
-			llvm::Function::arg_iterator arg = TheFunction->arg_begin();
-			++arg; // because first argument is the frame pointer (frame pointer should only be ommited in main which has no arguments)
+		void make_args(llvm::Function::arg_iterator &arg) const { // for including the fpar in the scope/activation record
 			for(const auto &id : idl->item_list) {
 				const char* const name = id->get_name();
 				arg->setName(name);
-				llvm::Type  *t = arg->getType();
+				llvm::Type *t = arg->getType();
 				// llvm::Value *v = Builder.CreateAlloca(t, nullptr, name); (- no because we use a stack)
 				llvm::Value *v = c64(42);
 				if(ref) {
@@ -573,7 +658,6 @@ class Fpar_def : public Listable {
 				// Builder.CreateStore(arg, v); (- no because we use a stack)
 				++arg;
 			}
-			return nullptr;
 		}
 	private:
 		bool      ref;
@@ -663,7 +747,7 @@ class Header : public Func_decl {
 			if(frame_pointer_t != nullptr) ll_fpars.push_back(frame_pointer_t);
 			if(params != nullptr)
 				for(const auto &fpd : params->item_list)
-					fpd->insert_ll_to(ll_fpars);
+					fpd->insert_ll_type_to(ll_fpars);
 			llvm::FunctionType *f_type = llvm::FunctionType::get(rtype->get_ll_type(), ll_fpars, false);
 			std::string full_name = ll_st.get_scope_name(".");
 		       	if(full_name == "") full_name = name->get_name();
@@ -674,9 +758,12 @@ class Header : public Func_decl {
 		void set_main() { name->set_main(); linkage = llvm::Function::ExternalLinkage;  }
 		void create_default_ret() const { rtype->create_default_ret(); }
 		void push_ll_formal_params() const {
+			llvm::Function *TheFunction = Builder.GetInsertBlock()->getParent();
+			llvm::Function::arg_iterator arg = TheFunction->arg_begin();
+			++arg; // because first argument is the frame pointer (frame pointer should only be ommited in main which has no arguments)
 			if(params != nullptr)
 				for(const auto &fpd : params->item_list)
-					fpd->compile();
+					fpd->make_args(arg);
 		}
 		const char* get_name() const      { return name->get_name(); }
 		bool is_func_def() const override { return true; }
@@ -753,12 +840,16 @@ class Func_def : public Local_def {
 				llvm::PointerType::get(prev_stack_frame->t, 0) : nullptr;
 			
 			llvm::Function* f;
-			const ll_ste *ste = ll_st.lookup(h->get_name());
+			const ll_ste *ste = ll_st.lookup(h->get_name(), ll_st.get_current_scope_no());
 			if(ste != nullptr) f = ste->f; // f was already decleared
 			else               f = h->make_ll_fun(frame_pointer_t);
 			llvm::BasicBlock *Prev  = Builder.GetInsertBlock();
 			llvm::BasicBlock *FunB  = llvm::BasicBlock::Create(TheContext, "entry", f);
 
+			// register f so anyone in the scope can see it (including itself)
+			ll_st.new_func(h->get_name(), f);
+
+			// start generating code for f
 			Builder.SetInsertPoint(FunB);
 			ll_st.push_scope(h->get_name());
 			h->push_ll_formal_params();
@@ -772,18 +863,12 @@ class Func_def : public Local_def {
 			ll_st.pop_scope();
 			Builder.SetInsertPoint(Prev);
 			
+			// optimize (if selected in AST)
 			TheFPM->run(*f);
-			
-			// register the new function so it can be called by others in the scope
-			ll_st.new_func(h->get_name(), f);
 			return nullptr;
 		}
 
-		void set_main() const {
-			h->set_main();
-			ll_st.push_scope("#runtime_lib_scope");
-			// also push runtime libarary functions in this scope
-		}
+		void set_main() const { h->set_main(); }
 		bool is_func_def() const override { return true; }
 	private:
 		struct stack_frame { llvm::Value *v; llvm::Type *t; };
@@ -890,7 +975,29 @@ class Char_const : public Expr { // char is treated as a string. maybe evaluate 
 			return fpt->is_comp_with_t(&Char_t);
 		}
 
-		llvm::Value* compile() const override { return c8(*ch); }
+		llvm::Value* compile() const override { return c8(parse_char(ch)); }
+
+		static char parse_char(const char* const ch) {
+			if(ch[1] == '\\') { // ch[0] is '
+				switch (ch[2]) {
+					case 'n':  return '\n';
+					case 't':  return '\t';
+					case 'r':  return '\r';
+					case '0':  return '\0';
+					case '\\': return '\\';
+					case '\'': return '\'';
+					case '\"': return '\"';
+					case 'x':  return hex(ch[3])*16 + hex(ch[4]);
+				}
+			}
+			return ch[1];
+		}
+		static int hex(const char x) {
+			if('0' <= x && x <= '9') return x - '0';
+			if('a' <= x && x <= 'f') return 10 + x - 'a';
+			if('A' <= x && x <= 'F') return 10 + x - 'A';
+			return 0; // maybe also print error?
+		}
 
 	private:
 		const char * const ch;
@@ -1234,7 +1341,7 @@ class L_value : public Expr {
 			}
 			else { // array
 				llvm::Value *arr = lv->create_llvm_pointer_to(t), *ev = e->compile();
-				if(t->isArrayTy()) t = t->getArrayElementType();
+				if(t->isArrayTy()) t = t->getArrayElementType(); // this might cause a bug in pass by ref because it till set t to a ptr type, not element (base) type
 				return Builder.CreateGEP(t, arr, { ev }, "arr_elem_ptr", true);
 			}
 		}
@@ -1242,7 +1349,7 @@ class L_value : public Expr {
 			unsigned long long i = 0;
 			while(str[++i] != '\0') { // str[0] is "
 				switch (str[i]) {
-					case '\"': break;
+					case '\"': case '\'': break;
 					case '\\':
 						switch (str[++i]) {
 							case 'n':  s += '\n'; break;
@@ -1254,19 +1361,13 @@ class L_value : public Expr {
 							case '\"': s += '\"'; break;
 							case 'x':
 								char x1 = str[++i], x2 = str[++i];
-								s += hex(x1)*16 + hex(x2);
+								s += Char_const::hex(x1)*16 + Char_const::hex(x2);
 						}
 						break;
 					default: s += str[i];
 				}
 			}
 			return i;
-		}
-		static int hex(const char x) {
-			if('0' <= x && x <= '9') return x - '0';
-			if('a' <= x && x <= 'f') return 10 + x - 'a';
-			if('A' <= x && x <= 'F') return 10 + x - 'A';
-			return 0; // maybe also print error?
 		}
 
 	private:
@@ -1378,19 +1479,25 @@ class Func_call : public Stmt, public Expr {
 
 		llvm::Value* compile() const override {
 			const ll_ste* ste = ll_st.lookup(id->get_name());
-			if(ste == nullptr) yyerror("Compiler Bug: call to non existing function");
+			if(ste == nullptr) {
+				std::cerr << id->get_name() << " -> ";
+				yyerror("Compiler Bug: call to non existing function");
+			}
+			const bool is_rtf = ste->is_rtf;
 			std::vector<llvm::Value*> args;
-			args.push_back(ll_st.lookup("#stack_frame")->v);
+			// do not pass frame pointer if it's a library function
+			if(!is_rtf) args.push_back(ll_st.lookup("#stack_frame")->v);
 			if(e_list != nullptr) e_list->compile_exprs(args);
 			llvm::Function::arg_iterator arg = ste->f->arg_begin();
 			unsigned long long i = 0;
+			if(!is_rtf) { ++arg; ++i; } // because first argument is the frame pointer
 			// FIX: REQUIRES TESTING
-			while(++arg != ste->f->arg_end()) { // because first argument is the frame pointer
-				++i;
+			while(arg != ste->f->arg_end()) {
 				if(arg->getType()->isPointerTy() && !args[i]->getType()->isPointerTy()) { // if ref but not already passed by ref
 					llvm::Type *t;
-					args[i] = e_list->item_list[i - 1]->create_llvm_pointer_to(t);
+					args[i] = e_list->item_list[is_rtf ? i : i - 1]->create_llvm_pointer_to(t);
 				}
+				++arg; ++i;
 			}
 			return Builder.CreateCall(ste->f, args);
 		}

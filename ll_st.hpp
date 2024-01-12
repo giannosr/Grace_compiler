@@ -14,8 +14,9 @@ struct ll_ste {
     llvm::Type* const base,
     const unsigned long long in_frame_number,
     const unsigned long long scope_number,
-    llvm::Function* const func
-  ) : t(type), base_type(base), frame_no(in_frame_number), scope_no(scope_number) {
+    llvm::Function* const func,
+    const bool rtf
+  ) : t(type), base_type(base), frame_no(in_frame_number), scope_no(scope_number), is_rtf(rtf) {
     if(val != nullptr) v = val; else f = func;
   }
   union {
@@ -25,6 +26,7 @@ struct ll_ste {
   llvm::Type *t;
   llvm::Type *base_type;
   unsigned long long frame_no, scope_no;
+  const bool is_rtf;
 };
 
 struct ll_scope {
@@ -45,10 +47,10 @@ class ll_symbol_table {
     scopes.pop_back();
   }
   void new_symbol(const std::string name, llvm::Value* const v, llvm::Type* const t, llvm::Type* base_type=nullptr, const unsigned long long frame_no=-1) {
-    scopes.back()->vars[name] = new ll_ste(v, t, base_type, frame_no, scopes.size(), nullptr);
+    scopes.back()->vars[name] = new ll_ste(v, t, base_type, frame_no, scopes.size(), nullptr, false);
   }
-  void new_func(const std::string name, llvm::Function* const f) {
-    scopes.back()->vars[name] = new ll_ste(nullptr, nullptr, nullptr, -1, -1, f);
+  void new_func(const std::string name, llvm::Function* const f, const bool is_rtf=false) {
+    scopes.back()->vars[name] = new ll_ste(nullptr, nullptr, nullptr, -1, -1, f, is_rtf);
   }
   const ll_ste* lookup(const std::string name) const {
     for(auto s = scopes.rbegin(); s != scopes.rend(); ++s) {
@@ -58,7 +60,9 @@ class ll_symbol_table {
     return nullptr;
   }
   const ll_ste* lookup(const std::string name, const unsigned long long scope) const {
-    return scopes[scope - 1]->vars.find(name)->second;
+    auto it = scopes[scope - 1]->vars.find(name);
+    if(it == scopes[scope - 1]->vars.end()) return nullptr;
+    return it->second;
   }
   std::string get_scope_name(const std::string &sep) const {
     std::string s_name = "";
