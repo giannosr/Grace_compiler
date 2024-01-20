@@ -282,11 +282,12 @@ class Listable : public AST { // this was a really bad idea but it can't be chan
 		virtual Fpar_type* get_fpt() const { return 0; }
 		virtual bool check_comp_with_fpt(Fpar_type* fpt) const { return 0; } // this is bad. Should I return *nullptr instead?
 		virtual llvm::Value* compile() const override { return nullptr; }
-		virtual void insert_ll_type_to(std::vector<llvm::Type*>& fpars) const { return; }
-		virtual void make_args(llvm::Function::arg_iterator &arg) const {}
+		virtual void insert_ll_type_to(std::vector<llvm::Type*>& fpars) const {}
+		virtual void make_args(llvm::Function::arg_iterator &arg, std::vector<std::string> &sfnames, std::vector<llvm::Type*> &sftypes) const {}
 		virtual bool is_var_def()  const { return false; } // for these two it's
 		virtual bool is_func_def() const { return false; } // ok if somebody uses them
 		virtual llvm::Value* create_llvm_pointer_to(llvm::Type* &t) const { return nullptr; }; //should only be called by l_value
+		virtual void compile_vars(std::vector<std::string> &sfnames, std::vector<llvm::Type*> &sftypes) const {} // used in Var_def
 }; // lol these funs are for specific types of listables but the way iterators work means we have to declare them here (all are for semantic analysis btw)
 
 class Item_list : public AST {
@@ -313,7 +314,7 @@ class Item_list : public AST {
 		const char* list_name;
 };
 
-/* place holder class for incomplete parts of the compiler, not in use */
+/* place holder class for incomplete parts of the compiler, not in use
 class Under_construction : public Listable {
 	public:
 		Under_construction(const char* s) : name(s) {}
@@ -326,6 +327,7 @@ class Under_construction : public Listable {
 	private:
 		const char *name;
 };
+*/
 
 /* End of Utils, Actual Syntax Structures */
 
@@ -519,18 +521,19 @@ class Var_def : public Local_def {
 			of_type->sem();
 		}
 
-		llvm::Value* compile() const override {
+		void compile_vars(std::vector<std::string> &sfnames, std::vector<llvm::Type*> &sftypes) const override {
 			for(const auto &id : Identifier_list->item_list) {
 				const char* const name = id->get_name();
-				llvm::Type* const t    = of_type->get_ll_type();
+				llvm::Type* const type = of_type->get_ll_type();
+				sfnames.push_back(name);
+				sftypes.push_back(type);
 				/*
 				llvm::Value *v = Builder.CreateAlloca(t, nullptr, name);
 				ll_st.new_symbol(name, v, t);
 				- no because we use a stack
 				*/
-				ll_st.new_symbol(name, nullptr, t);
+				ll_st.new_symbol(name, nullptr, type);
 			}
-			return nullptr;
 		}
 		bool is_var_def() const override { return true; }
 	private:
@@ -632,28 +635,32 @@ class Fpar_def : public Listable {
 			// since fpt inherits from t, this is implemented by the Type class
 			// so it ignores the case it has an array of unknown size which will be handled here
 			llvm::Type *t = fpt->get_ll_type();
-			if(ref) t = t->getPointerTo(); // llvm::PointerType::get(t, 0); // or t.getPointerTo();
-			if(fpt->has_unk_size_arr()) t = llvm::PointerType::get(t, 0);
+			if(ref) t = t->getPointerTo(); // llvm::PointerType::get(t, 0) or t->getPointerTo();
+			if(fpt->has_unk_size_arr()) t = t->getPointerTo(); //llvm::PointerType::get(t, 0);
 			fpars.insert(fpars.end(), get_idlist_size(), t);
 		}
-		void make_args(llvm::Function::arg_iterator &arg) const { // for including the fpar in the scope/activation record
+		void make_args(llvm::Function::arg_iterator &arg, std::vector<std::string> &sfnames, std::vector<llvm::Type*> &sftypes) const { // for including the fpar in the scope/activation record
 			for(const auto &id : idl->item_list) {
 				const char* const name = id->get_name();
 				arg->setName(name);
-				llvm::Type *t = arg->getType();
-				// llvm::Value *v = Builder.CreateAlloca(t, nullptr, name); (- no because we use a stack)
+				llvm::Type *type = arg->getType();
+				// llvm::Value *v = Builder.CreateAlloca(type, nullptr, name); (- no because we use a stack)
 				llvm::Value *v = c64(42);
 				if(ref) {
 					llvm::Type *base_type = fpt->get_ll_type();
+					// if passed by ref and unk size then base type is array of unk size
+					if(fpt->has_unk_size_arr()) base_type = llvm::ArrayType::get(base_type, 1);
 					// LLVM big dumb here (this is to set the dereferenceable attribute to the arg)
 					arg->addAttr(llvm::Attribute::get(
 						TheContext,
 						llvm::Attribute::Dereferenceable,
 						TheModule->getDataLayout().getTypeAllocSize(base_type)
 					));
-					ll_st.new_symbol(name, v, t, base_type);
+					ll_st.new_symbol(name, v, type, base_type);
 				}
-				else ll_st.new_symbol(name, v, t);
+				else ll_st.new_symbol(name, v, type);
+				sfnames.push_back(name);
+				sftypes.push_back(type);
 
 				// Builder.CreateStore(arg, v); (- no because we use a stack)
 				++arg;
@@ -757,13 +764,13 @@ class Header : public Func_decl {
 
 		void set_main() { name->set_main(); linkage = llvm::Function::ExternalLinkage;  }
 		void create_default_ret() const { rtype->create_default_ret(); }
-		void push_ll_formal_params() const {
+		void push_ll_formal_params(std::vector<std::string> &sfnames, std::vector<llvm::Type*> &sftypes) const {
 			llvm::Function *TheFunction = Builder.GetInsertBlock()->getParent();
 			llvm::Function::arg_iterator arg = TheFunction->arg_begin();
 			++arg; // because first argument is the frame pointer (frame pointer should only be ommited in main which has no arguments)
 			if(params != nullptr)
 				for(const auto &fpd : params->item_list)
-					fpd->make_args(arg);
+					fpd->make_args(arg, sfnames, sftypes);
 		}
 		const char* get_name() const      { return name->get_name(); }
 		bool is_func_def() const override { return true; }
@@ -779,10 +786,10 @@ class Local_def_list : public Item_list {
 	public:
 		Local_def_list() : Item_list("Local Definition List") {}
 		void sem() override { for(const auto &it : item_list) it->sem(); }
-		void compile_vars() const {
+		void compile_vars(std::vector<std::string> &sfnames, std::vector<llvm::Type*> &sftypes) const {
 			for(const auto &it : item_list)
 				if(it->is_var_def())
-					it->compile();
+					it->compile_vars(sfnames, sftypes);
 		}
 		void compile_funcs() const {
 			for(const auto &it : item_list)
@@ -843,8 +850,9 @@ class Func_def : public Local_def {
 			const ll_ste *ste = ll_st.lookup(h->get_name(), ll_st.get_current_scope_no());
 			if(ste != nullptr) f = ste->f; // f was already decleared
 			else               f = h->make_ll_fun(frame_pointer_t);
-			llvm::BasicBlock *Prev  = Builder.GetInsertBlock();
-			llvm::BasicBlock *FunB  = llvm::BasicBlock::Create(TheContext, "entry", f);
+
+			llvm::BasicBlock *Prev = Builder.GetInsertBlock();
+			llvm::BasicBlock *FunB = llvm::BasicBlock::Create(TheContext, "entry", f);
 
 			// register f so anyone in the scope can see it (including itself)
 			ll_st.new_func(h->get_name(), f);
@@ -852,10 +860,14 @@ class Func_def : public Local_def {
 			// start generating code for f
 			Builder.SetInsertPoint(FunB);
 			ll_st.push_scope(h->get_name());
-			h->push_ll_formal_params();
-			ldl->compile_vars();
+			std::vector<std::string> sfnames;
+			std::vector<llvm::Type*> sftypes;
+			sfnames.push_back("frame_pointer");
+			sftypes.push_back(frame_pointer_t == nullptr ? i64->getPointerTo() : frame_pointer_t);
+			h->push_ll_formal_params(sfnames, sftypes);
+			ldl->compile_vars(sfnames, sftypes);
 
-			generate_stack_frame(frame_pointer_t, f, prev_stack_frame);
+			generate_stack_frame(frame_pointer_t, f, prev_stack_frame, sfnames, sftypes);
 
 			ldl->compile_funcs();
 			b->compile();
@@ -872,17 +884,11 @@ class Func_def : public Local_def {
 		bool is_func_def() const override { return true; }
 	private:
 		struct stack_frame { llvm::Value *v; llvm::Type *t; };
-		void generate_stack_frame(llvm::Type* const frame_pointer_t, llvm::Function* const f, const ll_ste* const prev_stack_frame) const {
+		void generate_stack_frame(llvm::Type* const frame_pointer_t, llvm::Function* const f, const ll_ste* const prev_stack_frame,
+		const std::vector<std::string> &sfnames, const std::vector<llvm::Type*> &sftypes) const {
+			// sfnames, sftypes must contain the formal parameters in the same order as the function f passed
 			stack_frame sf;
-			std::vector<llvm::Type*> stack_frame_types;
-			std::vector<std::pair<std::string, ll_ste*> > stack_frame_vars;
-			if(frame_pointer_t != nullptr)
-				stack_frame_types.push_back(frame_pointer_t);
-			else // only for main (so that there are no problems bc rest of the code assumes the 0th position in the frame is a frame pointer)
-				stack_frame_types.push_back(llvm::PointerType::get(i64, 0));
-
-			ll_st.fill_in_stack_frame(stack_frame_vars, stack_frame_types);
-			sf.t = llvm::StructType::create(TheContext, stack_frame_types, std::string(h->get_name()) + "_frame_t");
+			sf.t = llvm::StructType::create(TheContext, sftypes, std::string(h->get_name()) + "_frame_t");
 			sf.v = Builder.CreateAlloca(sf.t, nullptr, "stack_frame");
 			/* for some reason the following decreases the size of arrays that can be decleared without segfault (sometimes it's also random)
 			if(frame_pointer_t != nullptr)
@@ -894,29 +900,28 @@ class Func_def : public Local_def {
 				);
 				msf->setAlignment(llvm::MaybeAlign(8));
 				sf.v = msf; // make mains stack frame global so it's on the heap and large arrays can be used
-					    // could also do this for all non recursive functions
+				            // could also do this for all non recursive functions
 			}
 			*/
 			
 			llvm::Function::arg_iterator arg = f->arg_begin();
 			
 			// set up frame pointer
-			if(frame_pointer_t != nullptr) {
+			if(frame_pointer_t != nullptr) { // this isn't executed for main who has no frame pointer as an arg
 				arg->setName("frame_pointer");
 				// store frame pointer in the first position of the stack frame
-				llvm::Value *v = Builder.CreateGEP(frame_pointer_t, sf.v, {c64(0)}, "frame_pointer_sf_ptr", true);
+				llvm::Value *v = Builder.CreateStructGEP(sf.t, sf.v, 0, "frame_pointer_sf_ptr");
 				Builder.CreateStore(arg, v);
 				ll_st.new_symbol("#frame_pointer", v, frame_pointer_t, prev_stack_frame->t, 0);
 			}
 
 			// store the rest of the variables
-			for(unsigned long long i = 0; i < stack_frame_vars.size(); ++i) {
-				const std::string name = stack_frame_vars[i].first;
-				ll_ste *ste = stack_frame_vars[i].second;
-				llvm::Value *v = Builder.CreateGEP(ste->t, sf.v, {c64(i+1)}, name + "_sf_ptr", true);
+			for(unsigned long long i = 1; i < sfnames.size(); ++i) {
+				const ll_ste *ste = ll_st.lookup(sfnames[i]);
+				llvm::Value *v = Builder.CreateStructGEP(sf.t, sf.v, i, sfnames[i] + "_sf_ptr");
 				if(ste->v != nullptr) // if it's a formal parameter (the value has been set to something to let us know)
 					Builder.CreateStore(++arg, v); // (we need to store the actual value to the stack frame)
-				ll_st.new_symbol(name, v, ste->t, ste->base_type, i+1); // use the sf instead
+				ll_st.new_symbol(sfnames[i], v, ste->t, ste->base_type, i); // use the sf instead
 			}
 
 			ll_st.new_symbol("#stack_frame", sf.v, sf.t);
@@ -1309,16 +1314,12 @@ class L_value : public Expr {
 					llvm::Value *fpp = fpe->v, *fp;
 					while(--scope > ste->scope_no) {
 						fp  = Builder.CreateLoad(fpe->t, fpp, "prev_frame_ptr");
-						fpp = Builder.CreateGEP(fpe->base_type, fp, {c64(0)}, "prev_frame_ptr_ptr");
+						fpp = Builder.CreateStructGEP(fpe->base_type, fp, 0, "prev_frame_ptr_ptr");
 						fpe = ll_st.lookup("#frame_pointer", scope);
 					}
 
-					fp  = Builder.CreateLoad(fpe->t, fpp, "frame_ptr");
-					unsigned long long frame_no = ste->frame_no;
-					ste = ll_st.lookup(name, ste->scope_no); // (scope_no is actually not needed here but we avoid searching all previous scopes again)
-					// ste is now the ste of that variable (the non local one)
-					
-					v = Builder.CreateGEP(ste->t, fp, {c64(frame_no)}, "non_local_v_ptr", true);
+					fp = Builder.CreateLoad(fpe->t, fpp, "frame_ptr");
+					v  = Builder.CreateStructGEP(fpe->base_type, fp, ste->frame_no, "non_local_v_ptr");
 				}
 
 				if(ste->base_type != nullptr) { // if passed by reference
@@ -1332,8 +1333,8 @@ class L_value : public Expr {
 			}
 			else if(str != nullptr) {
 				std::string s = "";
-				unsigned long long len = parse_str(str, s);
-				llvm::Value *p = Builder.CreateAlloca(i8, c64(len +1) , "str_ptr");
+				parse_str(str, s);
+				llvm::Value *p = Builder.CreateAlloca(i8, c64(s.length() + 1), "str_ptr");
 				llvm::Constant *v = llvm::ConstantDataArray::getString(TheContext, s, true);
 				Builder.CreateStore(v, p);
 				t = v->getType();
@@ -1341,11 +1342,17 @@ class L_value : public Expr {
 			}
 			else { // array
 				llvm::Value *arr = lv->create_llvm_pointer_to(t), *ev = e->compile();
-				if(t->isArrayTy()) t = t->getArrayElementType(); // this might cause a bug in pass by ref because it till set t to a ptr type, not element (base) type
+				/*
+				if(t->isArrayTy()) t = t->getArrayElementType();
 				return Builder.CreateGEP(t, arr, { ev }, "arr_elem_ptr", true);
+				*/
+				// sometimes gives slightly better optimization in ir
+				llvm::Value *ptr = Builder.CreateGEP(t, arr, {c64(0), ev}, "arr_elem_ptr", true);
+				t = t->getArrayElementType();
+				return ptr;
 			}
 		}
-		static unsigned long long parse_str(const char* const str, std::string &s) {
+		static void parse_str(const char* const str, std::string &s) {
 			unsigned long long i = 0;
 			while(str[++i] != '\0') { // str[0] is "
 				switch (str[i]) {
@@ -1367,7 +1374,6 @@ class L_value : public Expr {
 					default: s += str[i];
 				}
 			}
-			return i;
 		}
 
 	private:
@@ -1414,8 +1420,8 @@ class Assign : public Stmt {
 
 		llvm::Value* compile() const override {
 			llvm::Type  *t;
-			llvm::Value *v = lv->create_llvm_pointer_to(t);
-			Builder.CreateStore(e->compile(), v);
+			llvm::Value *ev = e->compile(), *v = lv->create_llvm_pointer_to(t);
+			Builder.CreateStore(ev, v);
 			return nullptr;
 		}
 	private:
@@ -1486,7 +1492,18 @@ class Func_call : public Stmt, public Expr {
 			const bool is_rtf = ste->is_rtf;
 			std::vector<llvm::Value*> args;
 			// do not pass frame pointer if it's a library function
-			if(!is_rtf) args.push_back(ll_st.lookup("#stack_frame")->v);
+			if(!is_rtf) {
+				// the correct fp is pointing to the sf of the function
+				// (scope) containing the def of the function called
+				unsigned long long i = ll_st.get_current_scope_no();
+				llvm::Value* v = ll_st.lookup("#stack_frame", i)->v;
+				while(i-- > ste->scope_no) {
+					llvm::Type  *t = ll_st.lookup("#stack_frame", i)->t;
+					llvm::Value *p = Builder.CreateStructGEP(t, v, 0, "fp_ptr_for_call");
+					v = Builder.CreateLoad(t->getPointerTo(), p, "fp_for call"); 
+				}
+				args.push_back(v);
+			}
 			if(e_list != nullptr) e_list->compile_exprs(args);
 			llvm::Function::arg_iterator arg = ste->f->arg_begin();
 			unsigned long long i = 0;

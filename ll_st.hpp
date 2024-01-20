@@ -29,7 +29,7 @@ struct ll_ste {
   const bool is_rtf;
 };
 
-struct ll_scope {
+struct ll_scope { // needed to get nested function names
   ll_scope(const char* const f_name) : vars(), func_name(f_name) {}
   std::map<std::string, ll_ste*> vars;
   const char* const func_name;
@@ -50,7 +50,7 @@ class ll_symbol_table {
     scopes.back()->vars[name] = new ll_ste(v, t, base_type, frame_no, scopes.size(), nullptr, false);
   }
   void new_func(const std::string name, llvm::Function* const f, const bool is_rtf=false) {
-    scopes.back()->vars[name] = new ll_ste(nullptr, nullptr, nullptr, -1, -1, f, is_rtf);
+    scopes.back()->vars[name] = new ll_ste(nullptr, nullptr, nullptr, -1, scopes.size(), f, is_rtf);
   }
   const ll_ste* lookup(const std::string name) const {
     for(auto s = scopes.rbegin(); s != scopes.rend(); ++s) {
@@ -71,15 +71,6 @@ class ll_symbol_table {
         if(s_name.size() == 0) s_name = std::string(s->func_name); 
         else                   s_name += sep + std::string(s->func_name);
     return s_name; 
-  }
-  void fill_in_stack_frame(std::vector<std::pair<std::string, ll_ste*> > &vars, std::vector<llvm::Type*> &types) const {
-    // unsigned long long i = 0;
-    for(auto &v : scopes.back()->vars) {
-      vars.push_back(v);
-      types.push_back(v.second->t);
-      // v.second->frame_no = ++i; // because frame_no 0 is the frame pointer
-      // (not needed because new entries are generated for every var after this)
-    }
   }
   unsigned long long get_current_scope_no() const { return scopes.size(); }
  private:
