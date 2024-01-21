@@ -44,7 +44,7 @@ make distclean
 
 ## Usage 🤯
 ```shell
-./grc.sh [flags] program.grc
+./grc.py [flags] program.grc
 ```
 produces the executable ```program``` (files are not required to end in ```.grc``` 📄)
 
