@@ -267,13 +267,11 @@ std::vector<condensed_fpar_list_item>* get_condensed_rep_of_fpars(const Fpar_def
 
 void yyerror(const char *msg) {
     fprintf(stderr, "Line %d: %s\n", lineno, msg);
+	printf("This is to make llc fail when running ./grc | llc\n");
     exit(2);
 }
 
 int main(int argc, char** argv) {
     if(argc > 1) optimization_flag = true;
-    int res = yyparse();
-	if(res == 0) printf("Parsing Success!\n");
-	else         printf("Something went wrong...\n");
-	return res;
+	return yyparse();
 }

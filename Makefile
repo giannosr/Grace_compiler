@@ -2,11 +2,11 @@
 
 LLVMCONFIG=llvm-config
 
-CC=g++
-CXXFLAGS=-Wall -Wextra -Wpedantic -Wno-parentheses -Wno-dangling-else -g `$(LLVMCONFIG) --cxxflags`
+CC=clang++
+CXXFLAGS=-O2 `$(LLVMCONFIG) --cxxflags`
 LDFLAGS=`$(LLVMCONFIG) --ldflags --system-libs --libs all`
 
-default: grc
+default: grc libgrc/libgrc.a
 
 lexer.cpp: lexer.l parser.hpp
 	flex -s -o lexer.cpp lexer.l
@@ -20,9 +20,15 @@ parser.o: parser.cpp parser.hpp lexer.hpp ast.hpp ast.cpp symbol_table.hpp runti
 
 grc: lexer.o parser.o ast.o
 	$(CC) $(CXXFLAGS) -o grc $^ $(LDFLAGS)
+	chmod +x grc.py
+
+libgrc/libgrc.a: libgrc/src
+	cd libgrc; make; cd ..
 
 clean:
 	$(RM) lexer.cpp parser.cpp parser.hpp parser.output lexer.o parser.o ast.o
 
 distclean: clean
+	chmod -x grc.py
 	$(RM) grc
+	cd libgrc; make clean; cd ..
