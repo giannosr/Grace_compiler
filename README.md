@@ -19,7 +19,7 @@
 - https://github.com/giannosr/grace_programs
 
 ## More Resources for Grace 🤓
-- a plug in for vscode which includes syntax highlighting and other resources can be found [here](https://github.com/kostis/ntua_compilers/tree/master/grace)
+- a plug in for vscode which includes syntax highlighting among other resources can be found [here](https://github.com/kostis/ntua_compilers/tree/master/grace)
 
 ## About the Runtime Library 🚀
 - it was based on [this](https://github.com/tomkosm/ntua-grace-runtime-lib) 🧎‍♀️

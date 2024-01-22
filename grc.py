@@ -19,6 +19,7 @@ if   flags['i'] != '': pass
 elif flags['f'] != '': cmd += ' | llc'
 else: # input file can be in any directory and output file will be in the callers directory
     name = getcwd() + '/' + input_file.split('/')[-1].split('.')[0]
+    if input_file[0] != '/': input_file = getcwd() + '/' + input_file
     cmd += f" < {input_file} > {name}.ll; llc {name}.ll -o {name}.s; clang -Wall -o {name} {name}.ll libgrc/libgrc.a"
 
 # perserve the exit code
