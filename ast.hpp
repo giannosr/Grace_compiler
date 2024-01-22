@@ -88,6 +88,8 @@ class AST {
 		void llvm_compile_and_dump(bool optimize=true) {
 			// Initialize
 			TheModule = std::make_unique<llvm::Module>("grace program", TheContext);
+			TheModule->setTargetTriple("x86_64-pc-linux-gnu"); // assuming compilation target (should be automatically changed by clang when compilig the ll)
+
 			// add more opts
 			TheFPM = std::make_unique<llvm::legacy::FunctionPassManager>(TheModule.get());
 			if (optimize) {
@@ -98,6 +100,7 @@ class AST {
 				TheFPM->add(llvm::createCFGSimplificationPass());
 			}
 			TheFPM->doInitialization();
+
 			// Initialize types
 			i8  = llvm::IntegerType::get(TheContext, 8);
 			i64 = llvm::IntegerType::get(TheContext, 64);
@@ -755,15 +758,23 @@ class Header : public Func_decl {
 			if(params != nullptr)
 				for(const auto &fpd : params->item_list)
 					fpd->insert_ll_type_to(ll_fpars);
-			llvm::FunctionType *f_type = llvm::FunctionType::get(rtype->get_ll_type(), ll_fpars, false);
+			llvm::Type *rt = is_main ? i64 : rtype->get_ll_type();
+			llvm::FunctionType *f_type = llvm::FunctionType::get(rt, ll_fpars, false);
+			
 			std::string full_name = ll_st.get_scope_name(".");
-		       	if(full_name == "") full_name = name->get_name();
+			if(full_name == "") full_name = name->get_name();
 			else                full_name += "." + std::string(name->get_name());
+			
+			llvm::GlobalValue::LinkageTypes linkage = is_main ? llvm::Function::ExternalLinkage
+			                                                  : llvm::Function::InternalLinkage;
 			return llvm::Function::Create(f_type, linkage, full_name, TheModule.get());
 		}
 
-		void set_main() { name->set_main(); linkage = llvm::Function::ExternalLinkage;  }
-		void create_default_ret() const { rtype->create_default_ret(); }
+		void set_main() { name->set_main(); is_main = true; }
+		void create_default_ret() const {
+			if(is_main) Builder.CreateRet(c64(0));
+			else        rtype->create_default_ret();
+		}
 		void push_ll_formal_params(std::vector<std::string> &sfnames, std::vector<llvm::Type*> &sftypes) const {
 			llvm::Function *TheFunction = Builder.GetInsertBlock()->getParent();
 			llvm::Function::arg_iterator arg = TheFunction->arg_begin();
@@ -779,7 +790,7 @@ class Header : public Func_decl {
 		Fpar_def_list *params;
 		Ret_type      *rtype;
 
-		llvm::GlobalValue::LinkageTypes linkage = llvm::Function::InternalLinkage;
+		bool is_main = false;
 };
 
 class Local_def_list : public Item_list {
@@ -1663,8 +1674,9 @@ class Return : public Stmt {
 		}
 		
 		llvm::Value* compile() const override {
-			if (e) Builder.CreateRet(e->compile());
-			else   Builder.CreateRetVoid();
+			if(e != nullptr)                           Builder.CreateRet(e->compile());
+			else if(ll_st.get_current_scope_no() == 2) Builder.CreateRet(c64(0)); // if main, return 0 to the OS (because grace main is void and would return random values)
+			else                                       Builder.CreateRetVoid();
 
 			// Because a basic block must end after a ret, we place everything that might come after
 			// and would have been in the same block into a block (chain) that will get deleted
