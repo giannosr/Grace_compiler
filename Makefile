@@ -3,7 +3,7 @@
 LLVMCONFIG=llvm-config
 
 CC=clang++
-CXXFLAGS=-O2 `$(LLVMCONFIG) --cxxflags`
+CXXFLAGS=-Ofast `$(LLVMCONFIG) --cxxflags`
 LDFLAGS=`$(LLVMCONFIG) --ldflags --system-libs --libs all`
 
 default: grc libgrc/libgrc.a

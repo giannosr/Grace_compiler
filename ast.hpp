@@ -655,8 +655,7 @@ class Fpar_def : public Listable {
 					if(fpt->has_unk_size_arr()) base_type = llvm::ArrayType::get(base_type, 1);
 					// LLVM big dumb here (this is to set the dereferenceable attribute to the arg)
 					arg->addAttr(llvm::Attribute::get(
-						TheContext,
-						llvm::Attribute::Dereferenceable,
+						TheContext, llvm::Attribute::Dereferenceable,
 						TheModule->getDataLayout().getTypeAllocSize(base_type)
 					));
 					ll_st.new_symbol(name, v, type, base_type);
@@ -778,7 +777,13 @@ class Header : public Func_decl {
 		void push_ll_formal_params(std::vector<std::string> &sfnames, std::vector<llvm::Type*> &sftypes) const {
 			llvm::Function *TheFunction = Builder.GetInsertBlock()->getParent();
 			llvm::Function::arg_iterator arg = TheFunction->arg_begin();
-			++arg; // because first argument is the frame pointer (frame pointer should only be ommited in main which has no arguments)
+			if (arg == TheFunction->arg_end()) return; // if no args no point in continuing
+			// set the dereferenceable attribute for the frame pointer (frame pointer should only be ommited in main which has no arguments)
+			arg->addAttr(llvm::Attribute::get(
+				TheContext, llvm::Attribute::Dereferenceable,
+				TheModule->getDataLayout().getTypeAllocSize(sftypes[0])
+			));
+			++arg;
 			if(params != nullptr)
 				for(const auto &fpd : params->item_list)
 					fpd->make_args(arg, sfnames, sftypes);
@@ -900,9 +905,7 @@ class Func_def : public Local_def {
 			// sfnames, sftypes must contain the formal parameters in the same order as the function f passed
 			stack_frame sf;
 			sf.t = llvm::StructType::create(TheContext, sftypes, std::string(h->get_name()) + "_frame_t");
-			sf.v = Builder.CreateAlloca(sf.t, nullptr, "stack_frame");
-			/* for some reason the following decreases the size of arrays that can be decleared without segfault (sometimes it's also random)
-			if(frame_pointer_t != nullptr)
+			if(frame_pointer_t != nullptr) // if not main
 				sf.v = Builder.CreateAlloca(sf.t, nullptr, "stack_frame");
 			else {
 				llvm::GlobalVariable *msf = new llvm::GlobalVariable(
@@ -913,7 +916,6 @@ class Func_def : public Local_def {
 				sf.v = msf; // make mains stack frame global so it's on the heap and large arrays can be used
 				            // could also do this for all non recursive functions
 			}
-			*/
 			
 			llvm::Function::arg_iterator arg = f->arg_begin();
 			

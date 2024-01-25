@@ -22,6 +22,7 @@
 - a plug in for vscode which includes syntax highlighting among other resources can be found [here](https://github.com/kostis/ntua_compilers/tree/master/grace)
 
 ## About the Runtime Library 🚀
+- it is contained in ```libgrc``` 📁
 - it was based on [this](https://github.com/tomkosm/ntua-grace-runtime-lib) 🧎‍♀️
 - im not sure its makefile works correctly 🤔
 - it relies on C's library
@@ -29,13 +30,28 @@
 
 ## Installation 🔥
 ```shell
-make
+make -j3
 ```
 then
 ```shell
 make clean
 ```
-removes all files produced but not need to run the executable (i.e. object files etc.) 😇
+removes all files produced but not need to run the executable (i.e. object files etc.) 🧴
+
+### LLVM Configuration Informtion 📋
+The compiler has been tested to work under the following configuration, which may be required for the compiler to compile and/or run ⚠️
+```shell
+$ llvm-config --version
+16.0.6
+$ llvm-config --cxxflags
+-I/usr/include -std=c++17   -fno-exceptions -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+$ llvm-config --ldflags
+-L/usr/lib
+$ llvm-config --system-libs
+
+$ llvm-config --libs all
+-lLLVM-16
+```
 
 ### To uninstall 🥺
 ```shell
@@ -54,5 +70,5 @@ produces the executable ```program``` (files are not required to end in ```.grc`
 
 ### Flags 😏
 - ```-O``` *optimise* 💀
-- ```-f``` *final code* 🤖 - read prorgam from stdin and put final code in stdout
+- ```-f``` *final code* 🤖        - read prorgam from stdin and put final code in stdout
 - ```-i``` *intermediate code* 👽 - read prorgam from stdin and put intermediate code in stdout
